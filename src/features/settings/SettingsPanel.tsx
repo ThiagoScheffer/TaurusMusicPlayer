@@ -1,0 +1,98 @@
+﻿import { useState } from "react";
+import type { AppSettings } from "./useAppSettings";
+
+interface SettingsPanelProps {
+  settings: AppSettings;
+  setPlayback: (patch: Partial<AppSettings["playback"]>) => void;
+  hotkeys: string[];
+  focusTimer: {
+    focusMinutes: number;
+    shortBreakMinutes: number;
+    longBreakMinutes: number;
+    breakBehavior: "continue" | "pause" | "lowerVolume";
+  };
+  setFocusMinutes: (minutes: number) => void;
+  setShortBreakMinutes: (minutes: number) => void;
+  setLongBreakMinutes: (minutes: number) => void;
+  setBreakBehavior: (behavior: "continue" | "pause" | "lowerVolume") => void;
+  exportData: () => string;
+  importData: (json: string) => { ok: boolean; error?: string };
+  resetAllData: () => boolean;
+  importError: string | null;
+}
+
+export function SettingsPanel(props: SettingsPanelProps) {
+  const {
+    settings,
+    setPlayback,
+    hotkeys,
+    focusTimer,
+    setFocusMinutes,
+    setShortBreakMinutes,
+    setLongBreakMinutes,
+    setBreakBehavior,
+    exportData,
+    importData,
+    resetAllData,
+    importError,
+  } = props;
+
+  const [importText, setImportText] = useState("");
+  const [dataOutput, setDataOutput] = useState("");
+
+  return (
+    <div className="settings-panel">
+      <strong>Settings</strong>
+
+      <div className="settings-section">
+        <h4>Playback</h4>
+        <label>Default Volume
+          <input type="number" min={0} max={100} value={settings.playback.defaultVolume} onChange={(e) => setPlayback({ defaultVolume: Number(e.target.value) || 0 })} />
+        </label>
+        <label><input type="checkbox" checked={settings.playback.autoplayNext} onChange={(e) => setPlayback({ autoplayNext: e.target.checked })} /> Autoplay Next</label>
+        <label><input type="checkbox" checked={settings.playback.rememberLastTrack} onChange={(e) => setPlayback({ rememberLastTrack: e.target.checked })} /> Remember Last Track</label>
+        <label><input type="checkbox" checked={settings.playback.skipBlacklistedTracks} onChange={(e) => setPlayback({ skipBlacklistedTracks: e.target.checked })} /> Skip Blacklisted Tracks</label>
+        <label>Blacklisted Video IDs (comma separated)
+          <input
+            value={settings.playback.blacklistedVideoIds.join(",")}
+            onChange={(e) =>
+              setPlayback({
+                blacklistedVideoIds: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+              })
+            }
+          />
+        </label>
+      </div>
+
+      <div className="settings-section">
+        <h4>Hotkeys</h4>
+        {hotkeys.map((hk) => <div key={hk}>{hk}</div>)}
+        <div>CapsLock is not supported as a modifier for global shortcuts.</div>
+      </div>
+
+      <div className="settings-section">
+        <h4>Focus Timer</h4>
+        <label>Focus Minutes <input type="number" min={1} value={focusTimer.focusMinutes} onChange={(e) => setFocusMinutes(Number(e.target.value) || 1)} /></label>
+        <label>Short Break Minutes <input type="number" min={1} value={focusTimer.shortBreakMinutes} onChange={(e) => setShortBreakMinutes(Number(e.target.value) || 1)} /></label>
+        <label>Long Break Minutes <input type="number" min={1} value={focusTimer.longBreakMinutes} onChange={(e) => setLongBreakMinutes(Number(e.target.value) || 1)} /></label>
+        <label>Break Music Behavior
+          <select value={focusTimer.breakBehavior} onChange={(e) => setBreakBehavior(e.target.value as "continue" | "pause" | "lowerVolume")}>
+            <option value="continue">Continue During Break</option>
+            <option value="pause">Pause During Break</option>
+            <option value="lowerVolume">Lower Volume During Break</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="settings-section">
+        <h4>Data</h4>
+        <button className="btn small" onClick={() => setDataOutput(exportData())}>Export JSON</button>
+        {dataOutput && <textarea className="settings-textarea" value={dataOutput} readOnly />}
+        <textarea className="settings-textarea" value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Paste exported JSON here" />
+        <button className="btn small" onClick={() => importData(importText)}>Import JSON</button>
+        {importError && <div className="settings-error">Import error: {importError}</div>}
+        <button className="btn small" onClick={resetAllData}>Reset All Data</button>
+      </div>
+    </div>
+  );
+}

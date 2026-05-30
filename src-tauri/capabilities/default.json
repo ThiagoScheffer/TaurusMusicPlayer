@@ -1,0 +1,26 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "enables the default permissions",
+  "windows": [
+    "main",
+    "options"
+  ],
+  "permissions": [
+    "core:window:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-get-all-windows",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-minimize",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-focus",
+    "core:window:allow-is-visible",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:event:allow-emit-to",
+    "core:webview:allow-create-webview-window",
+    "core:webview:allow-get-all-webviews"
+  ]
+}
