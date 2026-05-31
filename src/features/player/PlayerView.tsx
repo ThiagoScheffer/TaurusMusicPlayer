@@ -22,6 +22,7 @@ export function PlayerView() {
     rememberLastTrack: appSettings.settings.playback.rememberLastTrack,
     skipBlacklistedTracks: appSettings.settings.playback.skipBlacklistedTracks,
     blacklistedVideoIds: appSettings.settings.playback.blacklistedVideoIds,
+    blacklistEntries: appSettings.settings.playback.blacklistEntries,
   });
 
   const focusTimer = useFocusTimer({
@@ -60,7 +61,7 @@ export function PlayerView() {
     sessions,
     focusModes,
     focusTimer,
-    settings: appSettings.settings,
+    appSettings,
     activeSessionId,
     applySession,
     shuffle,
@@ -226,4 +227,3 @@ export function PlayerView() {
     </div>
   );
 }
-

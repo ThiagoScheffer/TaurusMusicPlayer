@@ -1,4 +1,5 @@
-﻿import { useState } from "react";
+import { useState } from "react";
+import type { BlacklistEntryType } from "../../types/player";
 import type { AppSettings } from "./useAppSettings";
 
 interface SettingsPanelProps {
@@ -39,6 +40,25 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
   const [importText, setImportText] = useState("");
   const [dataOutput, setDataOutput] = useState("");
+  const [blacklistType, setBlacklistType] = useState<BlacklistEntryType>("video");
+  const [blacklistValue, setBlacklistValue] = useState("");
+
+  const addBlacklistEntry = () => {
+    const value = blacklistValue.trim();
+    if (!value) return;
+    setPlayback({
+      blacklistEntries: [
+        ...settings.playback.blacklistEntries,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          type: blacklistType,
+          value,
+          createdAt: Date.now(),
+        },
+      ],
+    });
+    setBlacklistValue("");
+  };
 
   return (
     <div className="settings-panel">
@@ -52,16 +72,34 @@ export function SettingsPanel(props: SettingsPanelProps) {
         <label><input type="checkbox" checked={settings.playback.autoplayNext} onChange={(e) => setPlayback({ autoplayNext: e.target.checked })} /> Autoplay Next</label>
         <label><input type="checkbox" checked={settings.playback.rememberLastTrack} onChange={(e) => setPlayback({ rememberLastTrack: e.target.checked })} /> Remember Last Track</label>
         <label><input type="checkbox" checked={settings.playback.skipBlacklistedTracks} onChange={(e) => setPlayback({ skipBlacklistedTracks: e.target.checked })} /> Skip Blacklisted Tracks</label>
-        <label>Blacklisted Video IDs (comma separated)
-          <input
-            value={settings.playback.blacklistedVideoIds.join(",")}
-            onChange={(e) =>
-              setPlayback({
-                blacklistedVideoIds: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-              })
-            }
-          />
-        </label>
+        <div className="row" style={{ gap: 8 }}>
+          <select value={blacklistType} onChange={(e) => setBlacklistType(e.target.value as BlacklistEntryType)}>
+            <option value="video">Video ID / Link</option>
+            <option value="category">Music Category/Type</option>
+            <option value="genre">Genre</option>
+            <option value="keyword">Keyword</option>
+          </select>
+          <input value={blacklistValue} onChange={(e) => setBlacklistValue(e.target.value)} placeholder="Blacklist value" />
+          <button className="btn small" onClick={addBlacklistEntry}>Add</button>
+        </div>
+        {settings.playback.blacklistEntries.map((entry) => (
+          <div key={entry.id} className="queue-item">
+            <div className="queue-meta">
+              <div className="queue-title">{entry.value}</div>
+              <div className="queue-sub">{entry.type}</div>
+            </div>
+            <button
+              className="btn small"
+              onClick={() =>
+                setPlayback({
+                  blacklistEntries: settings.playback.blacklistEntries.filter((item) => item.id !== entry.id),
+                })
+              }
+            >
+              Restore
+            </button>
+          </div>
+        ))}
       </div>
 
       <div className="settings-section">

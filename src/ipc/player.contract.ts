@@ -1,24 +1,10 @@
 import { emitTo, listen } from "@tauri-apps/api/event";
 import type { Event, UnlistenFn } from "@tauri-apps/api/event";
-import { GLOBAL_SHORTCUT_EVENTS, PLAYER_EVENTS, RUNTIME_EVENTS } from "./events";
-import type { Track } from "../types/player";
-import type { FocusMode } from "../types/player";
+import { GLOBAL_SHORTCUT_EVENTS, RUNTIME_EVENTS } from "./events";
+import type { BlacklistEntry, FocusMode } from "../types/player";
 import type { RuntimeSnapshot } from "../runtime/RuntimeSnapshot";
 
-export interface PlayerStatePayload {
-  queue: Track[];
-  currentIndex: number;
-}
-
 export interface AppEventPayloads {
-  [PLAYER_EVENTS.playIndex]: { index: number };
-  [PLAYER_EVENTS.removeTrack]: { id: string };
-  [PLAYER_EVENTS.clearQueue]: void;
-  [PLAYER_EVENTS.dedupQueue]: void;
-  [PLAYER_EVENTS.startSession]: { sessionId: string };
-  [PLAYER_EVENTS.requestState]: void;
-  [PLAYER_EVENTS.state]: PlayerStatePayload;
-  [PLAYER_EVENTS.setFocusMode]: { modeId: string };
   [GLOBAL_SHORTCUT_EVENTS.playPause]: void;
   [GLOBAL_SHORTCUT_EVENTS.nextTrack]: void;
   [GLOBAL_SHORTCUT_EVENTS.previousTrack]: void;
@@ -26,6 +12,7 @@ export interface AppEventPayloads {
   [RUNTIME_EVENTS.requestSnapshot]: void;
   [RUNTIME_EVENTS.snapshot]: RuntimeSnapshot;
   [RUNTIME_EVENTS.command]: RuntimeCommand;
+  [RUNTIME_EVENTS.settingsExport]: { json: string };
 }
 
 export type AppEventName = keyof AppEventPayloads;
@@ -37,6 +24,9 @@ export type RuntimeCommand =
   | { type: "queue.dedup" }
   | { type: "session.save-current-queue"; name: string }
   | { type: "session.start"; sessionId: string }
+  | { type: "session.append-current-queue"; sessionId: string }
+  | { type: "session.replace-with-current-queue"; sessionId: string }
+  | { type: "session.remove-track"; sessionId: string; trackId: string }
   | { type: "session.rename"; sessionId: string; name: string }
   | { type: "session.duplicate"; sessionId: string }
   | { type: "session.delete"; sessionId: string }
@@ -57,7 +47,21 @@ export type RuntimeCommand =
   | { type: "focus-timer.set-short-break-minutes"; minutes: number }
   | { type: "focus-timer.set-long-break-minutes"; minutes: number }
   | { type: "focus-timer.set-break-behavior"; behavior: "continue" | "pause" | "lowerVolume" }
-  | { type: "focus-timer.set-break-volume"; volume: number };
+  | { type: "focus-timer.set-break-volume"; volume: number }
+  | {
+      type: "settings.update-playback";
+      patch: Partial<{
+        defaultVolume: number;
+        autoplayNext: boolean;
+        rememberLastTrack: boolean;
+        skipBlacklistedTracks: boolean;
+        blacklistedVideoIds: string[];
+        blacklistEntries: BlacklistEntry[];
+      }>;
+    }
+  | { type: "settings.import"; json: string }
+  | { type: "settings.reset" }
+  | { type: "settings.export-request" };
 
 type PayloadArg<T> = [T] extends [void] ? [] : [payload: T];
 

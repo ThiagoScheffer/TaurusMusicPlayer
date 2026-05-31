@@ -1,5 +1,6 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Session, Track } from "../../types/player";
+import { mergeUniqueTracks } from "./sessionTrackIdentity";
 
 const SESSIONS_KEY = "taurus.sessions";
 
@@ -139,6 +140,33 @@ export function useSessions({ queue, volume, muted, startSessionInPlayer }: UseS
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
   };
 
+  const appendCurrentQueueToSession = (sessionId: string) => {
+    if (queue.length === 0) return;
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? { ...s, queue: mergeUniqueTracks(s.queue, queue), updatedAt: Date.now() }
+          : s
+      )
+    );
+  };
+
+  const replaceSessionQueueWithCurrent = (sessionId: string) => {
+    setSessions((prev) =>
+      prev.map((s) => (s.id === sessionId ? { ...s, queue: cloneQueue(queue), updatedAt: Date.now() } : s))
+    );
+  };
+
+  const removeTrackFromSession = (sessionId: string, trackId: string) => {
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? { ...s, queue: s.queue.filter((track) => track.id !== trackId), updatedAt: Date.now() }
+          : s
+      )
+    );
+  };
+
   return {
     sessions,
     saveCurrentQueueAsSession,
@@ -147,5 +175,8 @@ export function useSessions({ queue, volume, muted, startSessionInPlayer }: UseS
     renameSession,
     duplicateSession,
     deleteSession,
+    appendCurrentQueueToSession,
+    replaceSessionQueueWithCurrent,
+    removeTrackFromSession,
   };
 }

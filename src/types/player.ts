@@ -38,6 +38,15 @@ export interface FocusMode {
   themeIntensity: "calm" | "neutral" | "intense";
 }
 
+export type BlacklistEntryType = "video" | "category" | "genre" | "keyword";
+
+export interface BlacklistEntry {
+  id: string;
+  type: BlacklistEntryType;
+  value: string;
+  createdAt: number;
+}
+
 export interface PlayerState {
   input: string;
   queue: Track[];

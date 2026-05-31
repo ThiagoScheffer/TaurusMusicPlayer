@@ -1,98 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { GLOBAL_SHORTCUT_EVENTS } from "../../ipc/events";
+import { useEffect, useRef, useState } from "react";
 import { extractYoutubeInfo } from "../../lib/youtube";
-import type { Session, Track } from "../../types/player";
-
-const DEFAULT_URL = "https://www.youtube.com/watch?v=0psoEvF8XIk";
-const STORAGE_KEYS = {
-  volume: "taurus.volume",
-  muted: "taurus.muted",
-  input: "taurus.input",
-  queue: "taurus.queue",
-  currentIndex: "taurus.currentIndex",
-} as const;
-
-function readNumber(key: string, fallback: number): number {
-  const raw = localStorage.getItem(key);
-  const parsed = raw ? Number(raw) : NaN;
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function readBoolean(key: string, fallback: boolean): boolean {
-  const raw = localStorage.getItem(key);
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  return fallback;
-}
-
-function readString(key: string, fallback: string): string {
-  return localStorage.getItem(key) ?? fallback;
-}
-
-function readQueue(): Track[] {
-  const raw = localStorage.getItem(STORAGE_KEYS.queue);
-  if (!raw) return [];
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed.filter((item): item is Track => {
-      if (!item || typeof item !== "object") return false;
-      const t = item as Partial<Track>;
-      return (
-        typeof t.id === "string" &&
-        typeof t.title === "string" &&
-        t.sourceType === "youtube" &&
-        typeof t.sourceUrl === "string" &&
-        typeof t.videoId === "string" &&
-        typeof t.addedAt === "number"
-      );
-    });
-  } catch {
-    return [];
-  }
-}
-
-function makeTrack(sourceUrl: string, videoId: string): Track {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    title: videoId,
-    sourceType: "youtube",
-    sourceUrl,
-    videoId,
-    addedAt: Date.now(),
-  };
-}
-
-async function fetchYoutubeTitle(videoId: string): Promise<string | null> {
-  try {
-    const url = `https://www.youtube.com/oembed?url=${encodeURIComponent(
-      `https://www.youtube.com/watch?v=${videoId}`
-    )}&format=json`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = (await res.json()) as { title?: unknown };
-    return typeof data.title === "string" && data.title.trim().length > 0 ? data.title.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-type YouTubePlayer = {
-  loadVideoById?: (args: { videoId: string; startSeconds?: number }) => void;
-  cueVideoById?: (args: { videoId: string; startSeconds?: number }) => void;
-  playVideo?: () => void;
-  pauseVideo?: () => void;
-  stopVideo?: () => void;
-  setVolume?: (v: number) => void;
-  mute?: () => void;
-  unMute?: () => void;
-  getDuration?: () => number;
-  getCurrentTime?: () => number;
-  getIframe?: () => HTMLIFrameElement | undefined;
-  seekTo?: (seconds: number, allowSeekAhead: boolean) => void;
-};
+import type { BlacklistEntry, Session, Track } from "../../types/player";
+import { isTrackBlacklisted } from "./useBlacklist";
+import { useGlobalShortcutSubscriptions } from "./usePlayerEvents";
+import { DEFAULT_URL, readPersistedPlayerInit, usePlayerPersistence } from "./usePlayerPersistence";
+import { makeTrack, useQueueTitleEnrichment, useYouTubePlayerOpts, type YouTubePlayer } from "./useYouTubePlayer";
 
 interface UsePlayerConfig {
   defaultVolume: number;
@@ -100,22 +12,22 @@ interface UsePlayerConfig {
   rememberLastTrack: boolean;
   skipBlacklistedTracks: boolean;
   blacklistedVideoIds: string[];
+  blacklistEntries: BlacklistEntry[];
 }
 
 export function usePlayer(config: UsePlayerConfig) {
-  const storedInput = readString(STORAGE_KEYS.input, DEFAULT_URL);
-  const initialQueue = config.rememberLastTrack ? readQueue() : [];
-  const initialIndex = config.rememberLastTrack
-    ? Math.max(-1, Math.min(readNumber(STORAGE_KEYS.currentIndex, initialQueue.length > 0 ? 0 : -1), initialQueue.length - 1))
-    : -1;
+  const initial = readPersistedPlayerInit({
+    defaultVolume: config.defaultVolume,
+    rememberLastTrack: config.rememberLastTrack,
+  });
 
-  const [input, setInput] = useState(storedInput);
-  const [queue, setQueue] = useState<Track[]>(initialQueue);
-  const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const [input, setInput] = useState(initial.storedInput ?? DEFAULT_URL);
+  const [queue, setQueue] = useState<Track[]>(initial.initialQueue);
+  const [currentIndex, setCurrentIndex] = useState(initial.initialIndex);
   const [isReady, setIsReady] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [volume, setVolume] = useState(readNumber(STORAGE_KEYS.volume, config.defaultVolume));
-  const [muted, setMuted] = useState(readBoolean(STORAGE_KEYS.muted, false));
+  const [volume, setVolume] = useState(initial.initialVolume);
+  const [muted, setMuted] = useState(initial.initialMuted);
   const [duration, setDuration] = useState(0);
   const [current, setCurrent] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -131,21 +43,7 @@ export function usePlayer(config: UsePlayerConfig) {
 
   const currentTrack = currentIndex >= 0 && currentIndex < queue.length ? queue[currentIndex] : null;
   const videoId = currentTrack?.videoId ?? null;
-
-  const opts = useMemo(
-    () => ({
-      width: "0",
-      height: "0",
-      playerVars: {
-        autoplay: 0,
-        controls: 0,
-        rel: 0,
-        modestbranding: 1,
-        playsinline: 1,
-      },
-    }),
-    []
-  );
+  const opts = useYouTubePlayerOpts();
 
   const clearPolling = () => {
     if (pollRef.current) {
@@ -155,7 +53,11 @@ export function usePlayer(config: UsePlayerConfig) {
   };
 
   const isBlacklisted = (track: Track | null) =>
-    !!track && config.skipBlacklistedTracks && config.blacklistedVideoIds.includes(track.videoId);
+    isTrackBlacklisted(track, {
+      skipBlacklistedTracks: config.skipBlacklistedTracks,
+      blacklistedVideoIds: config.blacklistedVideoIds,
+      blacklistEntries: config.blacklistEntries,
+    });
 
   const playTrackAtIndex = (index: number) => {
     if (index < 0 || index >= queue.length) return;
@@ -382,17 +284,27 @@ export function usePlayer(config: UsePlayerConfig) {
   };
 
   const togglePlayPause = () => {
-    if (isPlaying) {
-      pause();
-    } else {
-      play();
-    }
+    if (isPlaying) pause();
+    else play();
   };
 
   actionsRef.current.togglePlayPause = togglePlayPause;
   actionsRef.current.nextTrack = nextTrack;
   actionsRef.current.previousTrack = previousTrack;
   actionsRef.current.toggleMuted = toggleMuted;
+
+  usePlayerPersistence({
+    volume,
+    muted,
+    input,
+    queue,
+    currentIndex,
+    rememberLastTrack: config.rememberLastTrack,
+  });
+
+  useQueueTitleEnrichment({ queue, setQueue });
+
+  useGlobalShortcutSubscriptions(() => actionsRef.current);
 
   useEffect(() => {
     if (currentIndex >= queue.length && queue.length > 0) {
@@ -402,69 +314,6 @@ export function usePlayer(config: UsePlayerConfig) {
       setCurrentIndex(-1);
     }
   }, [queue, currentIndex]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.volume, String(volume));
-  }, [volume]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.muted, String(muted));
-  }, [muted]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.input, input);
-  }, [input]);
-
-  useEffect(() => {
-    if (config.rememberLastTrack) {
-      localStorage.setItem(STORAGE_KEYS.queue, JSON.stringify(queue));
-    }
-  }, [queue]);
-
-  useEffect(() => {
-    const pending = queue.filter((t) => t.title === t.videoId);
-    if (pending.length === 0) return;
-
-    let cancelled = false;
-    Promise.all(
-      pending.map(async (track) => ({
-        id: track.id,
-        title: await fetchYoutubeTitle(track.videoId),
-      }))
-    ).then((updates) => {
-      if (cancelled) return;
-      const titleMap = new Map(
-        updates
-          .filter((u): u is { id: string; title: string } => !!u.title)
-          .map((u) => [u.id, u.title])
-      );
-      if (titleMap.size === 0) return;
-
-      setQueue((prev) =>
-        prev.map((track) => {
-          const title = titleMap.get(track.id);
-          return title ? { ...track, title } : track;
-        })
-      );
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [queue]);
-
-  useEffect(() => {
-    if (config.rememberLastTrack) {
-      localStorage.setItem(STORAGE_KEYS.currentIndex, String(currentIndex));
-    }
-  }, [currentIndex]);
-
-  useEffect(() => {
-    if (!config.rememberLastTrack) {
-      localStorage.removeItem(STORAGE_KEYS.queue);
-      localStorage.removeItem(STORAGE_KEYS.currentIndex);
-    }
-  }, [config.rememberLastTrack]);
 
   useEffect(() => {
     if (!videoId) {
@@ -494,9 +343,7 @@ export function usePlayer(config: UsePlayerConfig) {
           setDuration(d);
           if (currentTrack && currentTrack.duration !== d) {
             setQueue((prev) =>
-              prev.map((track, idx) =>
-                idx === currentIndex ? { ...track, duration: d } : track
-              )
+              prev.map((track, idx) => (idx === currentIndex ? { ...track, duration: d } : track))
             );
           }
         }
@@ -517,57 +364,6 @@ export function usePlayer(config: UsePlayerConfig) {
     if (!isReady || !videoId) return;
     applyVolume(volume, muted);
   }, [volume, muted, isReady, videoId]);
-
-  useEffect(() => {
-    let unlistenFns: Array<() => void> = [];
-
-    const setupHotkeyListeners = async () => {
-      try {
-        const tauriEvent = (window as Window & {
-          __TAURI__?: {
-            event?: {
-              listen?: (
-                event: string,
-                cb: () => void
-              ) => Promise<() => void>;
-            };
-          };
-        }).__TAURI__?.event;
-
-        const listen = tauriEvent?.listen;
-        if (!listen) return;
-
-        const unlistenPlayPause = await listen(GLOBAL_SHORTCUT_EVENTS.playPause, () => {
-          actionsRef.current.togglePlayPause();
-        });
-        const unlistenNext = await listen(GLOBAL_SHORTCUT_EVENTS.nextTrack, () => {
-          actionsRef.current.nextTrack();
-        });
-        const unlistenPrevious = await listen(GLOBAL_SHORTCUT_EVENTS.previousTrack, () => {
-          actionsRef.current.previousTrack();
-        });
-        const unlistenMute = await listen(GLOBAL_SHORTCUT_EVENTS.toggleMute, () => {
-          actionsRef.current.toggleMuted();
-        });
-
-        unlistenFns = [unlistenPlayPause, unlistenNext, unlistenPrevious, unlistenMute];
-      } catch {
-        // Browser-only dev mode: Tauri API is unavailable.
-      }
-    };
-
-    setupHotkeyListeners();
-
-    return () => {
-      for (const unlisten of unlistenFns) {
-        try {
-          unlisten();
-        } catch {
-          // no-op
-        }
-      }
-    };
-  }, []);
 
   const onReady = (e: { target: YouTubePlayer }) => {
     playerRef.current = e.target;
@@ -639,8 +435,3 @@ export function usePlayer(config: UsePlayerConfig) {
     onError,
   };
 }
-
-
-
-
-

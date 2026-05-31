@@ -1,4 +1,5 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { BlacklistEntry, BlacklistEntryType } from "../../types/player";
 
 export interface AppSettings {
   playback: {
@@ -7,6 +8,7 @@ export interface AppSettings {
     rememberLastTrack: boolean;
     skipBlacklistedTracks: boolean;
     blacklistedVideoIds: string[];
+    blacklistEntries: BlacklistEntry[];
   };
 }
 
@@ -19,8 +21,35 @@ const DEFAULT_SETTINGS: AppSettings = {
     rememberLastTrack: true,
     skipBlacklistedTracks: false,
     blacklistedVideoIds: [],
+    blacklistEntries: [],
   },
 };
+
+function normalizeBlacklistType(value: unknown): BlacklistEntryType | null {
+  if (value === "video" || value === "category" || value === "genre" || value === "keyword") {
+    return value;
+  }
+  return null;
+}
+
+function normalizeBlacklistEntries(value: unknown): BlacklistEntry[] {
+  if (!Array.isArray(value)) return [];
+  const out: BlacklistEntry[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as Partial<BlacklistEntry>;
+    const type = normalizeBlacklistType(entry.type);
+    const text = typeof entry.value === "string" ? entry.value.trim() : "";
+    if (!type || !text) continue;
+    out.push({
+      id: typeof entry.id === "string" ? entry.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type,
+      value: text,
+      createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
+    });
+  }
+  return out;
+}
 
 function readSettings(): AppSettings {
   const raw = localStorage.getItem(SETTINGS_KEY);
@@ -49,6 +78,7 @@ function readSettings(): AppSettings {
         blacklistedVideoIds: Array.isArray(playback.blacklistedVideoIds)
           ? playback.blacklistedVideoIds.filter((v: unknown): v is string => typeof v === "string")
           : DEFAULT_SETTINGS.playback.blacklistedVideoIds,
+        blacklistEntries: normalizeBlacklistEntries(playback.blacklistEntries),
       },
     };
   } catch {

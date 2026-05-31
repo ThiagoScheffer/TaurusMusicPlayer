@@ -7,7 +7,7 @@ import { FocusModesPanel } from "../focus-modes/FocusModesPanel";
 import { FocusTimerPanel } from "../focus-timer/FocusTimerPanel";
 import { SessionsPanel } from "../sessions/SessionsPanel";
 import { SettingsPanel } from "./SettingsPanel";
-import { useAppSettings } from "./useAppSettings";
+import type { BlacklistEntryType } from "../../types/player";
 
 type Tab = "queue" | "sessions" | "focusTimer" | "focusModes" | "hotkeys" | "settings" | "blacklist";
 
@@ -42,8 +42,10 @@ const EMPTY_SNAPSHOT: RuntimeSnapshot = {
       rememberLastTrack: true,
       skipBlacklistedTracks: false,
       blacklistedVideoIds: [],
+      blacklistEntries: [],
     },
   },
+  settingsImportError: null,
 };
 
 const toCommand = (command: RuntimeCommand) =>
@@ -52,17 +54,21 @@ const toCommand = (command: RuntimeCommand) =>
 export function OptionsWindow() {
   const [tab, setTab] = useState<Tab>("queue");
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(EMPTY_SNAPSHOT);
-  const appSettings = useAppSettings();
+  const [settingsExportJson, setSettingsExportJson] = useState("");
 
   useEffect(() => {
-    const unlistenPromise = listenTypedEvent(RUNTIME_EVENTS.snapshot, (payload) => {
+    const unlistenSnapshotPromise = listenTypedEvent(RUNTIME_EVENTS.snapshot, (payload) => {
       setSnapshot(payload);
+    });
+    const unlistenExportPromise = listenTypedEvent(RUNTIME_EVENTS.settingsExport, (payload) => {
+      setSettingsExportJson(payload.json);
     });
 
     emitToMain(RUNTIME_EVENTS.requestSnapshot).catch(() => {});
 
     return () => {
-      unlistenPromise.then((fn) => fn()).catch(() => {});
+      unlistenSnapshotPromise.then((fn) => fn()).catch(() => {});
+      unlistenExportPromise.then((fn) => fn()).catch(() => {});
     };
   }, []);
 
@@ -120,6 +126,13 @@ export function OptionsWindow() {
             onRenameSession={(sessionId, name) => toCommand({ type: "session.rename", sessionId, name })}
             onDuplicateSession={(sessionId) => toCommand({ type: "session.duplicate", sessionId })}
             onDeleteSession={(sessionId) => toCommand({ type: "session.delete", sessionId })}
+            onAppendCurrentQueue={(sessionId) => toCommand({ type: "session.append-current-queue", sessionId })}
+            onReplaceWithCurrentQueue={(sessionId) =>
+              toCommand({ type: "session.replace-with-current-queue", sessionId })
+            }
+            onRemoveTrackFromSession={(sessionId, trackId) =>
+              toCommand({ type: "session.remove-track", sessionId, trackId })
+            }
           />
         )}
 
@@ -166,9 +179,14 @@ export function OptionsWindow() {
 
         {tab === "settings" && (
           <SettingsPanel
-            settings={appSettings.settings}
-            setPlayback={appSettings.setPlayback}
-            hotkeys={appSettings.hotkeys}
+            settings={snapshot.settings}
+            setPlayback={(patch) => toCommand({ type: "settings.update-playback", patch })}
+            hotkeys={[
+              "Ctrl+Alt+P - Play/Pause",
+              "Ctrl+Alt+N - Next Track",
+              "Ctrl+Alt+B - Previous Track",
+              "Ctrl+Alt+M - Mute/Unmute",
+            ]}
             focusTimer={{
               focusMinutes: snapshot.focusTimer.settings.focusMinutes,
               shortBreakMinutes: snapshot.focusTimer.settings.shortBreakMinutes,
@@ -179,32 +197,26 @@ export function OptionsWindow() {
             setShortBreakMinutes={(minutes) => toCommand({ type: "focus-timer.set-short-break-minutes", minutes })}
             setLongBreakMinutes={(minutes) => toCommand({ type: "focus-timer.set-long-break-minutes", minutes })}
             setBreakBehavior={(behavior) => toCommand({ type: "focus-timer.set-break-behavior", behavior })}
-            exportData={appSettings.exportData}
-            importData={appSettings.importData}
-            resetAllData={appSettings.resetAllData}
-            importError={appSettings.importError}
+            exportData={() => {
+              toCommand({ type: "settings.export-request" });
+              return settingsExportJson;
+            }}
+            importData={(json) => {
+              toCommand({ type: "settings.import", json });
+              return { ok: true };
+            }}
+            resetAllData={() => {
+              toCommand({ type: "settings.reset" });
+              return true;
+            }}
+            importError={snapshot.settingsImportError}
           />
         )}
 
         {tab === "blacklist" && (
           <div className="settings-panel options-section">
             <strong>Blacklist</strong>
-            {appSettings.settings.playback.blacklistedVideoIds.length === 0 && <div className="queue-empty">No blacklisted tracks.</div>}
-            {appSettings.settings.playback.blacklistedVideoIds.map((id) => (
-              <div key={id} className="queue-item">
-                <div className="queue-meta"><div className="queue-title">{id}</div></div>
-                <button
-                  className="btn small"
-                  onClick={() =>
-                    appSettings.setPlayback({
-                      blacklistedVideoIds: appSettings.settings.playback.blacklistedVideoIds.filter((v) => v !== id),
-                    })
-                  }
-                >
-                  RESTORE
-                </button>
-              </div>
-            ))}
+            <BlacklistPanel snapshot={snapshot} />
           </div>
         )}
       </div>
@@ -212,3 +224,65 @@ export function OptionsWindow() {
   );
 }
 
+function BlacklistPanel({ snapshot }: { snapshot: RuntimeSnapshot }) {
+  const [entryType, setEntryType] = useState<BlacklistEntryType>("video");
+  const [entryValue, setEntryValue] = useState("");
+  const entries = snapshot.settings.playback.blacklistEntries;
+
+  const addEntry = () => {
+    const value = entryValue.trim();
+    if (!value) return;
+    toCommand({
+      type: "settings.update-playback",
+      patch: {
+        blacklistEntries: [
+          ...entries,
+          {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            type: entryType,
+            value,
+            createdAt: Date.now(),
+          },
+        ],
+      },
+    });
+    setEntryValue("");
+  };
+
+  return (
+    <>
+      <div className="row" style={{ gap: 8 }}>
+        <select value={entryType} onChange={(e) => setEntryType(e.target.value as BlacklistEntryType)}>
+          <option value="video">Video ID / Link</option>
+          <option value="category">Music Category/Type</option>
+          <option value="genre">Genre</option>
+          <option value="keyword">Keyword</option>
+        </select>
+        <input value={entryValue} onChange={(e) => setEntryValue(e.target.value)} placeholder="Blacklist value" />
+        <button className="btn small" onClick={addEntry}>ADD</button>
+      </div>
+      {entries.length === 0 && <div className="queue-empty">No blacklist entries.</div>}
+      {entries.map((entry) => (
+        <div key={entry.id} className="queue-item">
+          <div className="queue-meta">
+            <div className="queue-title">{entry.value}</div>
+            <div className="queue-sub">{entry.type}</div>
+          </div>
+          <button
+            className="btn small"
+            onClick={() =>
+              toCommand({
+                type: "settings.update-playback",
+                patch: {
+                  blacklistEntries: entries.filter((item) => item.id !== entry.id),
+                },
+              })
+            }
+          >
+            RESTORE
+          </button>
+        </div>
+      ))}
+    </>
+  );
+}

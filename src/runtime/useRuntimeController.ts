@@ -1,19 +1,19 @@
 import { useEffect, useMemo } from "react";
-import { PLAYER_EVENTS, RUNTIME_EVENTS } from "../ipc/events";
+import { RUNTIME_EVENTS } from "../ipc/events";
 import { emitToOptions, listenTypedEvent, type RuntimeCommand } from "../ipc/player.contract";
 import type { RuntimeSnapshot } from "./RuntimeSnapshot";
 import type { usePlayer } from "../features/player/usePlayer";
 import type { useSessions } from "../features/sessions/useSessions";
 import type { useFocusModes } from "../features/focus-modes/useFocusModes";
 import type { useFocusTimer } from "../features/focus-timer/useFocusTimer";
-import type { AppSettings } from "../features/settings/useAppSettings";
+import type { useAppSettings } from "../features/settings/useAppSettings";
 
 export type RuntimeControllerDeps = {
   player: ReturnType<typeof usePlayer>;
   sessions: ReturnType<typeof useSessions>;
   focusModes: ReturnType<typeof useFocusModes>;
   focusTimer: ReturnType<typeof useFocusTimer>;
-  settings: AppSettings;
+  appSettings: ReturnType<typeof useAppSettings>;
   activeSessionId: string | null;
   applySession: (sessionId: string) => void;
   shuffle: boolean;
@@ -21,7 +21,7 @@ export type RuntimeControllerDeps = {
 };
 
 function buildSnapshot(deps: RuntimeControllerDeps): RuntimeSnapshot {
-  const { player, sessions, focusModes, focusTimer, settings, activeSessionId, shuffle, repeat } = deps;
+  const { player, sessions, focusModes, focusTimer, appSettings, activeSessionId, shuffle, repeat } = deps;
   return {
     queue: player.queue,
     currentIndex: player.currentIndex,
@@ -40,12 +40,13 @@ function buildSnapshot(deps: RuntimeControllerDeps): RuntimeSnapshot {
       remainingSeconds: focusTimer.remainingSeconds,
       settings: focusTimer.settings,
     },
-    settings,
+    settings: appSettings.settings,
+    settingsImportError: appSettings.importError,
   };
 }
 
 function handleRuntimeCommand(command: RuntimeCommand, deps: RuntimeControllerDeps) {
-  const { player, sessions, focusModes, focusTimer, applySession } = deps;
+  const { player, sessions, focusModes, focusTimer, applySession, appSettings } = deps;
   switch (command.type) {
     case "queue.play-index":
       player.playTrackImmediately(command.index);
@@ -64,6 +65,15 @@ function handleRuntimeCommand(command: RuntimeCommand, deps: RuntimeControllerDe
       break;
     case "session.start":
       applySession(command.sessionId);
+      break;
+    case "session.append-current-queue":
+      sessions.appendCurrentQueueToSession(command.sessionId);
+      break;
+    case "session.replace-with-current-queue":
+      sessions.replaceSessionQueueWithCurrent(command.sessionId);
+      break;
+    case "session.remove-track":
+      sessions.removeTrackFromSession(command.sessionId, command.trackId);
       break;
     case "session.rename":
       sessions.renameSession(command.sessionId, command.name);
@@ -116,30 +126,21 @@ function handleRuntimeCommand(command: RuntimeCommand, deps: RuntimeControllerDe
     case "focus-timer.set-break-volume":
       focusTimer.setBreakVolume(command.volume);
       break;
+    case "settings.update-playback":
+      appSettings.setPlayback(command.patch);
+      break;
+    case "settings.import":
+      appSettings.importData(command.json);
+      break;
+    case "settings.reset":
+      appSettings.resetAllData();
+      break;
+    case "settings.export-request":
+      emitToOptions(RUNTIME_EVENTS.settingsExport, { json: appSettings.exportData() }).catch(() => {});
+      break;
     default:
       break;
   }
-}
-
-function handleLegacyPlayerEvents(deps: RuntimeControllerDeps) {
-  const { player, applySession } = deps;
-  return [
-    listenTypedEvent(PLAYER_EVENTS.playIndex, (payload) => {
-      if (typeof payload.index === "number") player.playTrackImmediately(payload.index);
-    }),
-    listenTypedEvent(PLAYER_EVENTS.removeTrack, (payload) => {
-      if (payload.id) player.removeFromQueue(payload.id);
-    }),
-    listenTypedEvent(PLAYER_EVENTS.clearQueue, () => player.clearQueue()),
-    listenTypedEvent(PLAYER_EVENTS.dedupQueue, () => player.removeDuplicates()),
-    listenTypedEvent(PLAYER_EVENTS.startSession, (payload) => applySession(payload.sessionId)),
-    listenTypedEvent(PLAYER_EVENTS.requestState, () => {
-      emitToOptions(PLAYER_EVENTS.state, {
-        queue: player.queue,
-        currentIndex: player.currentIndex,
-      }).catch(() => {});
-    }),
-  ];
 }
 
 function subscribeRuntimeEvents(deps: RuntimeControllerDeps, getSnapshot: () => RuntimeSnapshot) {
@@ -172,7 +173,8 @@ export function useRuntimeController(deps: RuntimeControllerDeps) {
       deps.focusTimer.state,
       deps.focusTimer.remainingSeconds,
       deps.focusTimer.settings,
-      deps.settings,
+      deps.appSettings.settings,
+      deps.appSettings.importError,
     ]
   );
 
@@ -181,7 +183,6 @@ export function useRuntimeController(deps: RuntimeControllerDeps) {
     const setup = async () => {
       try {
         const listeners = [
-          ...handleLegacyPlayerEvents(deps),
           ...subscribeRuntimeEvents(deps, () => snapshot),
         ];
         for (const pending of listeners) {
@@ -205,13 +206,8 @@ export function useRuntimeController(deps: RuntimeControllerDeps) {
   }, [deps, snapshot]);
 
   useEffect(() => {
-    emitToOptions(PLAYER_EVENTS.state, {
-      queue: deps.player.queue,
-      currentIndex: deps.player.currentIndex,
-    }).catch(() => {});
     emitToOptions(RUNTIME_EVENTS.snapshot, snapshot).catch(() => {});
-  }, [deps.player.queue, deps.player.currentIndex, snapshot]);
+  }, [snapshot]);
 
   return { snapshot };
 }
-

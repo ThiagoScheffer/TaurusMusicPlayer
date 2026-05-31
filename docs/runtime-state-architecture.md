@@ -27,7 +27,8 @@ Options window role:
 - does not own independent runtime playback/session/mode/timer state
 
 Persisted configuration (still local-storage driven):
-- `useAppSettings` (playback settings, import/export/reset)
+- `useAppSettings` is now authoritative in **main window only** for runtime-linked settings mutations.
+- Options window consumes settings via runtime snapshot and sends typed settings commands.
 
 ## Runtime Model
 
@@ -40,6 +41,21 @@ Files:
 Typed IPC:
 - `src/ipc/events.ts`
 - `src/ipc/player.contract.ts`
+
+Player runtime decomposition:
+- `src/features/player/usePlayer.ts` (orchestration/composition)
+- `src/features/player/usePlayerPersistence.ts` (localStorage init + persistence effects)
+- `src/features/player/useBlacklist.ts` (blacklist decision helper)
+- `src/features/player/useYouTubePlayer.ts` (YouTube player type/opts/track/title enrichment)
+- `src/features/player/usePlayerEvents.ts` (global shortcut subscriptions)
+
+Settings runtime contract additions:
+- `runtime://settings-export` event for export payload response
+- `RuntimeCommand` settings intents:
+  - `settings.update-playback`
+  - `settings.import`
+  - `settings.reset`
+  - `settings.export-request`
 
 ## Synchronization Flow
 
@@ -109,7 +125,35 @@ flowchart LR
 - Persisted:
   - settings store, import/export/reset
 - Architecture outcome:
-  - kept as persisted configuration hook; options may still manage config forms
+  - `useAppSettings` is single authority in main runtime controller
+  - options is now settings view/controller only via snapshot + typed commands
+
+## Settings Ownership Model
+
+- Authoritative writer: main window `useAppSettings` (called from `PlayerView`, orchestrated by `useRuntimeController`)
+- Options window:
+  - reads `snapshot.settings` and `snapshot.settingsImportError`
+  - emits settings commands (`settings.update-playback`, `settings.import`, `settings.reset`, `settings.export-request`)
+  - receives export payload through `runtime://settings-export`
+
+Reason dual-writer removal:
+- avoids conflicting localStorage writes across windows
+- keeps settings mutation side effects centralized with runtime command handling
+- aligns settings with existing runtime command/snapshot architecture
+
+## Player Module Decomposition Status
+
+- `usePlayer.ts` remains API-compatible for current callers (`PlayerView`, runtime controller dependencies).
+- `usePlayer.ts` is now orchestration-first and composes focused player modules.
+- Extracted concerns:
+  - persistence setup/effects
+  - blacklist helper logic
+  - YouTube player utility + queue title enrichment
+  - global shortcut event subscriptions
+
+Remaining player debt:
+- queue transition and playback transition logic is still concentrated in `usePlayer.ts`.
+- If needed, next safe split is queue transition helpers (`remove/next/previous/dedup`).
 
 ## Migration Notes
 
@@ -117,8 +161,8 @@ flowchart LR
 2. Main window now publishes full runtime snapshots.
 3. Options window no longer instantiates runtime playback/session/mode/timer hooks.
 4. Options window controls runtime exclusively via typed commands.
-5. Legacy `player://...` events are still supported in main for backward compatibility during migration.
-6. Runtime command switch + snapshot publishing moved from `PlayerView.tsx` into `useRuntimeController.ts`.
+5. Runtime command switch + snapshot publishing moved from `PlayerView.tsx` into `useRuntimeController.ts`.
+6. Settings dual-writer pattern removed: options no longer mutates settings directly through `useAppSettings`.
 
 ## Runtime Controller Responsibility
 
@@ -127,7 +171,6 @@ flowchart LR
 - handling all `RuntimeCommand` variants
 - responding to `runtime://request-snapshot`
 - emitting `runtime://snapshot` updates
-- maintaining temporary legacy compatibility (`player://...` listeners + `player://state` response)
 
 Why `PlayerView` is no longer the command hub:
 - keeps component focused on rendering and local UI interactions
@@ -138,20 +181,88 @@ Why `PlayerView` is no longer the command hub:
 
 - Runtime command architecture: **active**
 - Options window runtime control path: **runtime://command**
-- Legacy path: **still enabled** (`player://...`) for compatibility
+- Legacy path: **retired in source**
 - Rust backend changes: **none** (as intended)
 
-## Legacy Retirement Plan (`player://...`)
+## Legacy `player://...` Audit Result
 
-1. Keep both runtime and legacy listeners during transition.
-2. Confirm no callers remain on raw `player://...` control path.
-3. Remove legacy listeners from `useRuntimeController`.
-4. Remove `player://state` compatibility snapshot emission.
-5. Keep runtime events as sole sync/control protocol.
+Classification and outcome:
+
+- `player://state`: safe to remove -> removed
+- `player://request-state`: safe to remove -> removed
+- `player://play-index`: safe to remove -> removed
+- `player://remove-track`: safe to remove -> removed
+- `player://clear-queue`: safe to remove -> removed
+- `player://dedup-queue`: safe to remove -> removed
+- `player://start-session`: safe to remove -> removed
+
+Current status:
+- Active producers in `src/`: none
+- Active consumers in `src/`: none
+- Retained for compatibility: none
+
+Current IPC model after cleanup:
+- Runtime control/sync:
+  - `runtime://request-snapshot`
+  - `runtime://snapshot`
+  - `runtime://command`
+  - `runtime://settings-export`
+- Shell shortcut events (Rust -> frontend):
+  - `global-shortcut://play-pause`
+  - `global-shortcut://next-track`
+  - `global-shortcut://previous-track`
+  - `global-shortcut://toggle-mute`
 
 ## Remaining Risks
 
-- `useAppSettings` remains mounted in both windows; config writes are synced via localStorage, but this is still dual-hook persistence ownership.
+- `useAppSettings` logic remains reusable and callable in multiple places by design; enforce convention that only runtime controller issues settings mutations.
 - `shuffle` and `repeat` are modeled in runtime snapshot but currently not user-driven in UI.
 - Runtime command handler is centralized in `useRuntimeController`; as commands grow, split into smaller command-domain handlers.
-- Backward-compatible legacy `player://...` listeners should be removed once all callers migrate to runtime commands.
+- Keep runtime command handler modular as event surface grows (queue/session/focus/settings partitions).
+
+## Session Queue-Save Commands
+
+New runtime commands for updating existing sessions from the active runtime queue:
+- `session.append-current-queue`
+- `session.replace-with-current-queue`
+- `session.remove-track`
+
+Flow:
+1. Options window emits typed runtime command.
+2. Main window `useRuntimeController` dispatches to `useSessions`.
+3. Updated sessions are reflected back through `runtime://snapshot`.
+
+Append semantics:
+- `session.append-current-queue` performs deterministic unique merge.
+- Existing session track order is preserved.
+- Only new unique tracks from current queue are appended in queue order.
+
+Duplicate identity rule (priority order):
+1. normalized YouTube video id
+2. normalized source URL
+3. track id fallback
+
+Selected session track management:
+- Sessions panel can expand a selected session and inspect saved tracks.
+- Individual saved tracks can be removed via `session.remove-track`.
+- Removal is row-specific (by `trackId`) to avoid destructive cleanup of legacy duplicates.
+
+Mutation ownership:
+- Options window does not mutate sessions directly.
+- Session list remains persisted in localStorage through `useSessions` (main-owned mutation path).
+
+## Blacklist Entry Types And Matching
+
+Playback blacklist now supports typed entries:
+- `video`: YouTube link or video id
+- `category`: music type/category text
+- `genre`: genre text
+- `keyword`: free-text keyword
+
+Deterministic matching rules:
+- `video`: exact normalized match against track video id/source url (YouTube id normalization first).
+- `category` / `genre` / `keyword`: case-insensitive substring match over track metadata fields (`title`, `artist`, `sourceUrl`, `videoId`).
+
+Backward compatibility:
+- Existing `blacklistedVideoIds` behavior is preserved.
+- New `blacklistEntries` list is additive and evaluated together with legacy exact-id list.

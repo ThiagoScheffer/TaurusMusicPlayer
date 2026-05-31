@@ -29,5 +29,5 @@ export interface RuntimeSnapshot {
   modes: FocusMode[];
   focusTimer: FocusTimerSnapshot;
   settings: AppSettings;
+  settingsImportError: string | null;
 }
-
