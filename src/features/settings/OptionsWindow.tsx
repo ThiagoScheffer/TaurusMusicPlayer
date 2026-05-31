@@ -1,78 +1,86 @@
-﻿import { useEffect, useState } from "react";
-import { emitTo, listen } from "@tauri-apps/api/event";
-import type { Track } from "../../types/player";
+import { useEffect, useMemo, useState } from "react";
+import { RUNTIME_EVENTS } from "../../ipc/events";
+import { emitToMain, listenTypedEvent, type RuntimeCommand } from "../../ipc/player.contract";
+import type { FocusMode, Session } from "../../types/player";
+import type { RuntimeSnapshot } from "../../runtime/RuntimeSnapshot";
 import { FocusModesPanel } from "../focus-modes/FocusModesPanel";
-import { useFocusModes } from "../focus-modes/useFocusModes";
 import { FocusTimerPanel } from "../focus-timer/FocusTimerPanel";
-import { useFocusTimer } from "../focus-timer/useFocusTimer";
 import { SessionsPanel } from "../sessions/SessionsPanel";
-import { useSessions } from "../sessions/useSessions";
 import { SettingsPanel } from "./SettingsPanel";
 import { useAppSettings } from "./useAppSettings";
 
 type Tab = "queue" | "sessions" | "focusTimer" | "focusModes" | "hotkeys" | "settings" | "blacklist";
 
-interface PlayerSnapshot {
-  queue: Track[];
-  currentIndex: number;
-}
+const EMPTY_SNAPSHOT: RuntimeSnapshot = {
+  queue: [],
+  currentIndex: -1,
+  currentTrack: null,
+  isPlaying: false,
+  volume: 70,
+  muted: false,
+  shuffle: false,
+  repeat: "off",
+  activeSessionId: null,
+  activeFocusModeId: null,
+  sessions: [],
+  modes: [],
+  focusTimer: {
+    state: "idle",
+    remainingSeconds: 25 * 60,
+    settings: {
+      focusMinutes: 25,
+      shortBreakMinutes: 5,
+      longBreakMinutes: 15,
+      breakBehavior: "continue",
+      breakVolume: 35,
+    },
+  },
+  settings: {
+    playback: {
+      defaultVolume: 70,
+      autoplayNext: true,
+      rememberLastTrack: true,
+      skipBlacklistedTracks: false,
+      blacklistedVideoIds: [],
+    },
+  },
+};
+
+const toCommand = (command: RuntimeCommand) =>
+  emitToMain(RUNTIME_EVENTS.command, command).catch(() => {});
 
 export function OptionsWindow() {
   const [tab, setTab] = useState<Tab>("queue");
-  const [snapshot, setSnapshot] = useState<PlayerSnapshot>({ queue: [], currentIndex: -1 });
+  const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(EMPTY_SNAPSHOT);
   const appSettings = useAppSettings();
 
-  const focusTimer = useFocusTimer({
-    isPlaying: false,
-    volume: appSettings.settings.playback.defaultVolume,
-    play: () => {},
-    pause: () => {},
-    setVolume: () => {},
-  });
-
-  const {
-    sessions,
-    saveCurrentQueueAsSession,
-    startSession: _unusedStartSession,
-    renameSession,
-    duplicateSession,
-    deleteSession,
-  } = useSessions({
-    queue: snapshot.queue,
-    volume: appSettings.settings.playback.defaultVolume,
-    muted: false,
-    startSessionInPlayer: () => {},
-  });
-
-  const { modes, activeModeId, selectMode, createMode, editMode, deleteMode } = useFocusModes({
-    sessions,
-    setVolume: (v) => appSettings.setPlayback({ defaultVolume: v }),
-    startSessionById: (sessionId) => {
-      emitMain("player://start-session", { sessionId });
-    },
-  });
-
   useEffect(() => {
-    const unlistenPromise = listen<{ queue: Track[]; currentIndex: number }>("player://state", (event) => {
-      setSnapshot({ queue: event.payload.queue ?? [], currentIndex: event.payload.currentIndex ?? -1 });
+    const unlistenPromise = listenTypedEvent(RUNTIME_EVENTS.snapshot, (payload) => {
+      setSnapshot(payload);
     });
 
-    emitMain("player://request-state", {});
+    emitToMain(RUNTIME_EVENTS.requestSnapshot).catch(() => {});
 
     return () => {
       unlistenPromise.then((fn) => fn()).catch(() => {});
     };
   }, []);
 
-  const tabs: Array<{ key: Tab; label: string }> = [
-    { key: "queue", label: `Queue (${snapshot.queue.length})` },
-    { key: "sessions", label: "Sessions" },
-    { key: "focusTimer", label: "Focus Timer" },
-    { key: "focusModes", label: "Focus Modes" },
-    { key: "hotkeys", label: "Hotkeys" },
-    { key: "settings", label: "Settings" },
-    { key: "blacklist", label: "Blacklist" },
-  ];
+  const sessions: Session[] = snapshot.sessions;
+  const modes: FocusMode[] = snapshot.modes;
+
+  const tabs: Array<{ key: Tab; label: string }> = useMemo(
+    () => [
+      { key: "queue", label: `Queue (${snapshot.queue.length})` },
+      { key: "sessions", label: "Sessions" },
+      { key: "focusTimer", label: "Focus Timer" },
+      { key: "focusModes", label: "Focus Modes" },
+      { key: "hotkeys", label: "Hotkeys" },
+      { key: "settings", label: "Settings" },
+      { key: "blacklist", label: "Blacklist" },
+    ],
+    [snapshot.queue.length]
+  );
 
   return (
     <div className="options-app">
@@ -87,18 +95,18 @@ export function OptionsWindow() {
         {tab === "queue" && (
           <div className="options-section queue-panel">
             <div className="queue-actions">
-              <button className="btn small" onClick={() => emitMain("player://dedup-queue", {})}>DEDUP</button>
-              <button className="btn small" onClick={() => emitMain("player://clear-queue", {})}>CLEAR</button>
+              <button className="btn small" onClick={() => toCommand({ type: "queue.dedup" })}>DEDUP</button>
+              <button className="btn small" onClick={() => toCommand({ type: "queue.clear" })}>CLEAR</button>
             </div>
             {snapshot.queue.length === 0 && <div className="queue-empty">Queue is empty.</div>}
             {snapshot.queue.map((track, index) => (
               <div key={track.id} className={`queue-item ${index === snapshot.currentIndex ? "active" : ""}`}>
-                <button className="queue-play" onClick={() => emitMain("player://play-index", { index })}>PLAY</button>
+                <button className="queue-play" onClick={() => toCommand({ type: "queue.play-index", index })}>PLAY</button>
                 <div className="queue-meta">
                   <div className="queue-title">{track.title}</div>
                   <div className="queue-sub">{track.videoId}</div>
                 </div>
-                <button className="btn small" onClick={() => emitMain("player://remove-track", { id: track.id })}>REMOVE</button>
+                <button className="btn small" onClick={() => toCommand({ type: "queue.remove-track", id: track.id })}>REMOVE</button>
               </div>
             ))}
           </div>
@@ -107,29 +115,29 @@ export function OptionsWindow() {
         {tab === "sessions" && (
           <SessionsPanel
             sessions={sessions}
-            onSaveCurrentQueue={saveCurrentQueueAsSession}
-            onStartSession={(id) => emitMain("player://start-session", { sessionId: id })}
-            onRenameSession={renameSession}
-            onDuplicateSession={duplicateSession}
-            onDeleteSession={deleteSession}
+            onSaveCurrentQueue={(name) => toCommand({ type: "session.save-current-queue", name })}
+            onStartSession={(sessionId) => toCommand({ type: "session.start", sessionId })}
+            onRenameSession={(sessionId, name) => toCommand({ type: "session.rename", sessionId, name })}
+            onDuplicateSession={(sessionId) => toCommand({ type: "session.duplicate", sessionId })}
+            onDeleteSession={(sessionId) => toCommand({ type: "session.delete", sessionId })}
           />
         )}
 
         {tab === "focusTimer" && (
           <FocusTimerPanel
-            state={focusTimer.state}
-            remainingSeconds={focusTimer.remainingSeconds}
-            settings={focusTimer.settings}
-            setFocusMinutes={focusTimer.setFocusMinutes}
-            setShortBreakMinutes={focusTimer.setShortBreakMinutes}
-            setLongBreakMinutes={focusTimer.setLongBreakMinutes}
-            setBreakBehavior={focusTimer.setBreakBehavior}
-            setBreakVolume={focusTimer.setBreakVolume}
-            start={focusTimer.start}
-            pauseTimer={focusTimer.pauseTimer}
-            resume={focusTimer.resume}
-            reset={focusTimer.reset}
-            skipPhase={focusTimer.skipPhase}
+            state={snapshot.focusTimer.state}
+            remainingSeconds={snapshot.focusTimer.remainingSeconds}
+            settings={snapshot.focusTimer.settings}
+            setFocusMinutes={(minutes) => toCommand({ type: "focus-timer.set-focus-minutes", minutes })}
+            setShortBreakMinutes={(minutes) => toCommand({ type: "focus-timer.set-short-break-minutes", minutes })}
+            setLongBreakMinutes={(minutes) => toCommand({ type: "focus-timer.set-long-break-minutes", minutes })}
+            setBreakBehavior={(behavior) => toCommand({ type: "focus-timer.set-break-behavior", behavior })}
+            setBreakVolume={(volume) => toCommand({ type: "focus-timer.set-break-volume", volume })}
+            start={() => toCommand({ type: "focus-timer.start" })}
+            pauseTimer={() => toCommand({ type: "focus-timer.pause" })}
+            resume={() => toCommand({ type: "focus-timer.resume" })}
+            reset={() => toCommand({ type: "focus-timer.reset" })}
+            skipPhase={() => toCommand({ type: "focus-timer.skip" })}
           />
         )}
 
@@ -137,14 +145,11 @@ export function OptionsWindow() {
           <FocusModesPanel
             modes={modes}
             sessions={sessions}
-            activeModeId={activeModeId}
-            onSelectMode={(id) => {
-              selectMode(id);
-              emitMain("player://set-focus-mode", { modeId: id });
-            }}
-            onCreateMode={createMode}
-            onEditMode={editMode}
-            onDeleteMode={deleteMode}
+            activeModeId={snapshot.activeFocusModeId ?? ""}
+            onSelectMode={(modeId) => toCommand({ type: "focus-mode.select", modeId })}
+            onCreateMode={(name) => toCommand({ type: "focus-mode.create", name })}
+            onEditMode={(modeId, update) => toCommand({ type: "focus-mode.edit", modeId, update })}
+            onDeleteMode={(modeId) => toCommand({ type: "focus-mode.delete", modeId })}
           />
         )}
 
@@ -165,15 +170,15 @@ export function OptionsWindow() {
             setPlayback={appSettings.setPlayback}
             hotkeys={appSettings.hotkeys}
             focusTimer={{
-              focusMinutes: focusTimer.settings.focusMinutes,
-              shortBreakMinutes: focusTimer.settings.shortBreakMinutes,
-              longBreakMinutes: focusTimer.settings.longBreakMinutes,
-              breakBehavior: focusTimer.settings.breakBehavior,
+              focusMinutes: snapshot.focusTimer.settings.focusMinutes,
+              shortBreakMinutes: snapshot.focusTimer.settings.shortBreakMinutes,
+              longBreakMinutes: snapshot.focusTimer.settings.longBreakMinutes,
+              breakBehavior: snapshot.focusTimer.settings.breakBehavior,
             }}
-            setFocusMinutes={focusTimer.setFocusMinutes}
-            setShortBreakMinutes={focusTimer.setShortBreakMinutes}
-            setLongBreakMinutes={focusTimer.setLongBreakMinutes}
-            setBreakBehavior={focusTimer.setBreakBehavior}
+            setFocusMinutes={(minutes) => toCommand({ type: "focus-timer.set-focus-minutes", minutes })}
+            setShortBreakMinutes={(minutes) => toCommand({ type: "focus-timer.set-short-break-minutes", minutes })}
+            setLongBreakMinutes={(minutes) => toCommand({ type: "focus-timer.set-long-break-minutes", minutes })}
+            setBreakBehavior={(behavior) => toCommand({ type: "focus-timer.set-break-behavior", behavior })}
             exportData={appSettings.exportData}
             importData={appSettings.importData}
             resetAllData={appSettings.resetAllData}
@@ -206,5 +211,4 @@ export function OptionsWindow() {
     </div>
   );
 }
-  const emitMain = <T,>(event: string, payload?: T) =>
-    emitTo("main", event, payload).catch(() => {});
+

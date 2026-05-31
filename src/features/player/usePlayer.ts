@@ -1,4 +1,5 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { GLOBAL_SHORTCUT_EVENTS } from "../../ipc/events";
 import { extractYoutubeInfo } from "../../lib/youtube";
 import type { Session, Track } from "../../types/player";
 
@@ -536,16 +537,16 @@ export function usePlayer(config: UsePlayerConfig) {
         const listen = tauriEvent?.listen;
         if (!listen) return;
 
-        const unlistenPlayPause = await listen("global-shortcut://play-pause", () => {
+        const unlistenPlayPause = await listen(GLOBAL_SHORTCUT_EVENTS.playPause, () => {
           actionsRef.current.togglePlayPause();
         });
-        const unlistenNext = await listen("global-shortcut://next-track", () => {
+        const unlistenNext = await listen(GLOBAL_SHORTCUT_EVENTS.nextTrack, () => {
           actionsRef.current.nextTrack();
         });
-        const unlistenPrevious = await listen("global-shortcut://previous-track", () => {
+        const unlistenPrevious = await listen(GLOBAL_SHORTCUT_EVENTS.previousTrack, () => {
           actionsRef.current.previousTrack();
         });
-        const unlistenMute = await listen("global-shortcut://toggle-mute", () => {
+        const unlistenMute = await listen(GLOBAL_SHORTCUT_EVENTS.toggleMute, () => {
           actionsRef.current.toggleMuted();
         });
 
@@ -638,3 +639,8 @@ export function usePlayer(config: UsePlayerConfig) {
     onError,
   };
 }
+
+
+
+
+

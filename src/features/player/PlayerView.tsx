@@ -1,8 +1,8 @@
-﻿import YouTube from "react-youtube";
-import { useEffect } from "react";
-import { emitTo, listen } from "@tauri-apps/api/event";
+import YouTube from "react-youtube";
+import { useCallback, useState } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useRuntimeController } from "../../runtime/useRuntimeController";
 import { formatTime } from "../../lib/time";
 import { useFocusModes } from "../focus-modes/useFocusModes";
 import { useFocusTimer } from "../focus-timer/useFocusTimer";
@@ -12,41 +12,11 @@ import { usePlayer } from "./usePlayer";
 
 export function PlayerView() {
   const appSettings = useAppSettings();
+  const [shuffle] = useState(false);
+  const [repeat] = useState<"off" | "one" | "all">("off");
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
-  const {
-    input,
-    setInput,
-    queue,
-    currentIndex,
-    currentTrack,
-    videoId,
-    isPlaying,
-    volume,
-    setVolume,
-    muted,
-    toggleMuted,
-    duration,
-    current,
-    setCurrent,
-    setDragging,
-    addToQueue,
-    playNowFromInput,
-    nextTrack,
-    previousTrack,
-    removeFromQueue,
-    clearQueue,
-    removeDuplicates,
-    startSession,
-    play,
-    pause,
-    stop,
-    seekTo,
-    opts,
-    onReady,
-    onStateChange,
-    onError,
-    playTrackImmediately,
-  } = usePlayer({
+  const player = usePlayer({
     defaultVolume: appSettings.settings.playback.defaultVolume,
     autoplayNext: appSettings.settings.playback.autoplayNext,
     rememberLastTrack: appSettings.settings.playback.rememberLastTrack,
@@ -54,68 +24,48 @@ export function PlayerView() {
     blacklistedVideoIds: appSettings.settings.playback.blacklistedVideoIds,
   });
 
-  const focusTimer = useFocusTimer({ isPlaying, volume, play, pause, setVolume });
-
-  const { sessions, getSessionById } = useSessions({
-    queue,
-    volume,
-    muted,
-    startSessionInPlayer: startSession,
+  const focusTimer = useFocusTimer({
+    isPlaying: player.isPlaying,
+    volume: player.volume,
+    play: player.play,
+    pause: player.pause,
+    setVolume: player.setVolume,
   });
 
-  const { activeMode } = useFocusModes({
-    sessions,
-    setVolume,
-    startSessionById: (sessionId: string) => {
-      const session = getSessionById(sessionId);
+  const sessions = useSessions({
+    queue: player.queue,
+    volume: player.volume,
+    muted: player.muted,
+    startSessionInPlayer: () => {},
+  });
+
+  const applySession = useCallback(
+    (sessionId: string) => {
+      const session = sessions.getSessionById(sessionId);
       if (!session) return;
-      startSession(session);
+      player.startSession(session);
+      setActiveSessionId(sessionId);
     },
+    [sessions, player]
+  );
+
+  const focusModes = useFocusModes({
+    sessions: sessions.sessions,
+    setVolume: player.setVolume,
+    startSessionById: applySession,
   });
 
-  useEffect(() => {
-    const unlistenFns: Array<() => void> = [];
-    const setup = async () => {
-      try {
-        unlistenFns.push(
-          await listen<{ index: number }>("player://play-index", (event) => {
-            if (typeof event.payload.index === "number") {
-              playTrackImmediately(event.payload.index);
-            }
-          })
-        );
-        unlistenFns.push(
-          await listen<{ id: string }>("player://remove-track", (event) => {
-            if (event.payload.id) removeFromQueue(event.payload.id);
-          })
-        );
-        unlistenFns.push(await listen("player://clear-queue", () => clearQueue()));
-        unlistenFns.push(await listen("player://dedup-queue", () => removeDuplicates()));
-        unlistenFns.push(
-          await listen<{ sessionId: string }>("player://start-session", (event) => {
-            const session = getSessionById(event.payload.sessionId);
-            if (session) startSession(session);
-          })
-        );
-        unlistenFns.push(await listen("player://request-state", () => {
-          emitTo("options", "player://state", { queue, currentIndex }).catch(() => {});
-        }));
-      } catch {
-        // browser mode
-      }
-    };
-    setup();
-
-    return () => {
-      for (const fn of unlistenFns) {
-        try { fn(); } catch { /* no-op */ }
-      }
-    };
-  }, [queue, currentIndex, getSessionById, startSession, playTrackImmediately, removeFromQueue, clearQueue, removeDuplicates]);
-
-  useEffect(() => {
-    emitTo("options", "player://state", { queue, currentIndex }).catch(() => {});
-  }, [queue, currentIndex]);
+  useRuntimeController({
+    player,
+    sessions,
+    focusModes,
+    focusTimer,
+    settings: appSettings.settings,
+    activeSessionId,
+    applySession,
+    shuffle,
+    repeat,
+  });
 
   const openOptionsWindow = async () => {
     try {
@@ -176,21 +126,21 @@ export function PlayerView() {
   };
 
   const handleAddOrLoad = () => {
-    if (!currentTrack) {
-      playNowFromInput();
+    if (!player.currentTrack) {
+      player.playNowFromInput();
       return;
     }
-    addToQueue();
+    player.addToQueue();
   };
 
   return (
-    <div className={`page mode-${activeMode?.themeIntensity ?? "neutral"}`}>
+    <div className={`page mode-${focusModes.activeMode?.themeIntensity ?? "neutral"}`}>
       <div className="winamp">
         <div className="titlebar" data-tauri-drag-region>
           <div className="title">TAURUS CODEWAVE</div>
           <div className="titlebar-right">
-            <div className="subtitle" title={`Music for Productivity ;) · ${activeMode?.name ?? "No Mode"}`}>
-              Music for Productivity ;) · {activeMode?.name ?? "No Mode"}
+            <div className="subtitle" title={`Music for Productivity ;) · ${focusModes.activeMode?.name ?? "No Mode"}`}>
+              Music for Productivity ;) · {focusModes.activeMode?.name ?? "No Mode"}
             </div>
             <button className="menu-btn" onClick={openOptionsWindow} aria-label="Options">☰</button>
             <button className="menu-btn" onClick={handleMinimize} aria-label="Minimize">−</button>
@@ -201,19 +151,19 @@ export function PlayerView() {
         <div className="screen">
           <div className="track">
             <span className="label">URL/ID</span>
-            <input className="url" value={input} onChange={(e) => setInput(e.target.value)} />
+            <input className="url" value={player.input} onChange={(e) => player.setInput(e.target.value)} />
             <button className="btn small" onClick={handleAddOrLoad}>ADD/LOAD</button>
           </div>
 
           <div className="row">
             <div className="time">
-              <span>{formatTime(current)}</span>
+              <span>{formatTime(player.current)}</span>
               <span className="sep">/</span>
-              <span>{formatTime(duration)}</span>
+              <span>{formatTime(player.duration)}</span>
             </div>
             <div className="pill">
-              <span className={`dot ${isPlaying ? "on" : ""}`} />
-              <span>{isPlaying ? "PLAY" : "STOP"}</span>
+              <span className={`dot ${player.isPlaying ? "on" : ""}`} />
+              <span>{player.isPlaying ? "PLAY" : "STOP"}</span>
             </div>
           </div>
 
@@ -221,41 +171,59 @@ export function PlayerView() {
             <input
               type="range"
               min={0}
-              max={Math.max(1, Math.floor(duration))}
-              value={Math.min(current, duration || 0)}
-              onMouseDown={() => setDragging(true)}
-              onMouseUp={() => setDragging(false)}
-              onTouchStart={() => setDragging(true)}
-              onTouchEnd={() => setDragging(false)}
-              onChange={(e) => setCurrent(Number(e.target.value))}
-              onMouseUpCapture={(e) => seekTo(Number((e.target as HTMLInputElement).value))}
-              onTouchEndCapture={(e) => seekTo(Number((e.target as HTMLInputElement).value))}
+              max={Math.max(1, Math.floor(player.duration))}
+              value={Math.min(player.current, player.duration || 0)}
+              onMouseDown={() => player.setDragging(true)}
+              onMouseUp={() => player.setDragging(false)}
+              onTouchStart={() => player.setDragging(true)}
+              onTouchEnd={() => player.setDragging(false)}
+              onChange={(e) => player.setCurrent(Number(e.target.value))}
+              onMouseUpCapture={(e) => player.seekTo(Number((e.target as HTMLInputElement).value))}
+              onTouchEndCapture={(e) => player.seekTo(Number((e.target as HTMLInputElement).value))}
             />
           </div>
 
           <div className="current-track">
-            Current: {currentTrack ? currentTrack.title || currentTrack.videoId : "No track selected"}
+            Current: {player.currentTrack ? player.currentTrack.title || player.currentTrack.videoId : "No track selected"}
           </div>
-          <div className="queue-sub">Queue: {queue.length} · Timer: {focusTimer.state} {formatTime(focusTimer.remainingSeconds)}</div>
+          <div className="queue-sub">Queue: {player.queue.length} · Timer: {focusTimer.state} {formatTime(focusTimer.remainingSeconds)}</div>
         </div>
 
         <div className="controls">
-          <button className="btn small" onClick={previousTrack} disabled={!videoId}>⏮</button>
-          <button className="btn small" onClick={isPlaying ? pause : play} disabled={!videoId}>{isPlaying ? "⏸" : "▶"}</button>
-          <button className="btn small" onClick={stop} disabled={!videoId}>■</button>
-          <button className="btn small" onClick={nextTrack} disabled={!videoId}>⏭</button>
+          <button className="btn small" onClick={player.previousTrack} disabled={!player.videoId}>⏮</button>
+          <button className="btn small" onClick={player.isPlaying ? player.pause : player.play} disabled={!player.videoId}>
+            {player.isPlaying ? "⏸" : "▶"}
+          </button>
+          <button className="btn small" onClick={player.stop} disabled={!player.videoId}>■</button>
+          <button className="btn small" onClick={player.nextTrack} disabled={!player.videoId}>⏭</button>
           <div className="vol">
-            <button className="btn small" onClick={toggleMuted} disabled={!videoId}>{muted ? "UNMUTE" : "MUTE"}</button>
-            <input type="range" min={0} max={100} value={volume} onChange={(e) => setVolume(Number(e.target.value))} disabled={!videoId} />
+            <button className="btn small" onClick={player.toggleMuted} disabled={!player.videoId}>
+              {player.muted ? "UNMUTE" : "MUTE"}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={player.volume}
+              onChange={(e) => player.setVolume(Number(e.target.value))}
+              disabled={!player.videoId}
+            />
           </div>
         </div>
 
-        {videoId && (
+        {player.videoId && (
           <div className="yt">
-            <YouTube videoId={videoId} opts={opts} onReady={onReady} onStateChange={onStateChange} onError={onError} />
+            <YouTube
+              videoId={player.videoId}
+              opts={player.opts}
+              onReady={player.onReady}
+              onStateChange={player.onStateChange}
+              onError={player.onError}
+            />
           </div>
         )}
       </div>
     </div>
   );
 }
+

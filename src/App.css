@@ -211,6 +211,14 @@
   font-size: 12px;
 }
 
+.sessions-panel,
+.modes-panel {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .sessions-header,
 .focus-header,
 .modes-header {
@@ -235,7 +243,8 @@
 .sessions-list,
 .modes-list {
   margin-top: 8px;
-  max-height: 220px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   display: grid;
   gap: 6px;
