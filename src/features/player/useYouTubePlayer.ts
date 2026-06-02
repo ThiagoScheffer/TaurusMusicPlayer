@@ -28,6 +28,7 @@ export function useYouTubePlayerOpts() {
         rel: 0,
         modestbranding: 1,
         playsinline: 1,
+        origin: 'http://localhost:5173',
       },
     }),
     []

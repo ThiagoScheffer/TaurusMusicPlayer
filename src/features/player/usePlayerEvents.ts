@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { GLOBAL_SHORTCUT_EVENTS } from "../../ipc/events";
 
 interface ShortcutActions {
@@ -14,17 +15,6 @@ export function useGlobalShortcutSubscriptions(getActions: () => ShortcutActions
 
     const setupHotkeyListeners = async () => {
       try {
-        const tauriEvent = (window as Window & {
-          __TAURI__?: {
-            event?: {
-              listen?: (event: string, cb: () => void) => Promise<() => void>;
-            };
-          };
-        }).__TAURI__?.event;
-
-        const listen = tauriEvent?.listen;
-        if (!listen) return;
-
         const unlistenPlayPause = await listen(GLOBAL_SHORTCUT_EVENTS.playPause, () => {
           getActions().togglePlayPause();
         });
@@ -57,4 +47,3 @@ export function useGlobalShortcutSubscriptions(getActions: () => ShortcutActions
     };
   }, [getActions]);
 }
-

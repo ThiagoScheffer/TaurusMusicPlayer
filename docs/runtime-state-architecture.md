@@ -247,6 +247,12 @@ Selected session track management:
 - Individual saved tracks can be removed via `session.remove-track`.
 - Removal is row-specific (by `trackId`) to avoid destructive cleanup of legacy duplicates.
 
+Start Session semantics:
+- `session.start` is queue replacement, not append.
+- Main runtime controller resolves the session from current main state and calls player queue replacement.
+- Replacement is idempotent: repeated `Start Session` clicks produce the same queue content as the saved session list (no multiplication).
+- Empty sessions replace the queue with empty state (`currentIndex = -1`).
+
 Mutation ownership:
 - Options window does not mutate sessions directly.
 - Session list remains persisted in localStorage through `useSessions` (main-owned mutation path).

@@ -15,6 +15,20 @@ interface UsePlayerConfig {
   blacklistEntries: BlacklistEntry[];
 }
 
+function clampStartIndex(queueLength: number, startIndex?: number): number {
+  if (queueLength <= 0) return -1;
+  if (typeof startIndex !== "number" || Number.isNaN(startIndex)) return 0;
+  return Math.min(queueLength - 1, Math.max(0, Math.floor(startIndex)));
+}
+
+function cloneTracks(tracks: Track[]): Track[] {
+  return tracks.map((track) => ({ ...track }));
+}
+
+export function buildQueueFromSession(session: Session): Track[] {
+  return cloneTracks(session.queue);
+}
+
 export function usePlayer(config: UsePlayerConfig) {
   const initial = readPersistedPlayerInit({
     defaultVolume: config.defaultVolume,
@@ -34,6 +48,9 @@ export function usePlayer(config: UsePlayerConfig) {
 
   const playerRef = useRef<YouTubePlayer | null>(null);
   const pollRef = useRef<number | null>(null);
+  const shouldAutoPlayRef = useRef(false);
+  const trackSwitchPendingRef = useRef(false);
+  const forcePlayIntervalRef = useRef<number | null>(null);
   const actionsRef = useRef({
     togglePlayPause: () => {},
     nextTrack: () => {},
@@ -50,6 +67,13 @@ export function usePlayer(config: UsePlayerConfig) {
       window.clearInterval(pollRef.current);
     }
     pollRef.current = null;
+  };
+
+  const clearForcePlayInterval = () => {
+    if (forcePlayIntervalRef.current) {
+      window.clearInterval(forcePlayIntervalRef.current);
+      forcePlayIntervalRef.current = null;
+    }
   };
 
   const isBlacklisted = (track: Track | null) =>
@@ -76,13 +100,59 @@ export function usePlayer(config: UsePlayerConfig) {
     setCurrentIndex(targetIndex);
     setCurrent(0);
     setDuration(track.duration ?? 0);
+    shouldAutoPlayRef.current = true;
+    trackSwitchPendingRef.current = true;
+    clearForcePlayInterval();
 
     const p = playerRef.current;
     if (p?.loadVideoById) {
+      try {
+        p.stopVideo?.();
+      } catch {
+        // no-op
+      }
       p.loadVideoById({ videoId: track.videoId, startSeconds: 0 });
+      p.playVideo?.();
+      const startedAt = Date.now();
+      forcePlayIntervalRef.current = window.setInterval(() => {
+        if (!trackSwitchPendingRef.current || Date.now() - startedAt > 2400) {
+          clearForcePlayInterval();
+          return;
+        }
+        try {
+          playerRef.current?.playVideo?.();
+        } catch {
+          // no-op
+        }
+      }, 160);
       setIsPlaying(true);
     }
   };
+
+  useEffect(() => {
+    if (!trackSwitchPendingRef.current || !currentTrack?.videoId) return;
+
+    const retryLoadAndPlay = () => {
+      try {
+        const p = playerRef.current;
+        if (!p) return;
+        p.loadVideoById?.({ videoId: currentTrack.videoId, startSeconds: 0 });
+        p.playVideo?.();
+      } catch {
+        // no-op
+      }
+    };
+
+    const t1 = window.setTimeout(retryLoadAndPlay, 80);
+    const t2 = window.setTimeout(retryLoadAndPlay, 260);
+    const t3 = window.setTimeout(retryLoadAndPlay, 620);
+
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+    };
+  }, [currentTrack?.id, currentTrack?.videoId]);
 
   const addToQueue = () => {
     const trimmed = input.trim();
@@ -120,6 +190,7 @@ export function usePlayer(config: UsePlayerConfig) {
 
     const p = playerRef.current;
     if (p?.loadVideoById) {
+      shouldAutoPlayRef.current = true;
       p.loadVideoById({ videoId: info.videoId, startSeconds: info.startSeconds });
       setIsPlaying(true);
       setCurrent(0);
@@ -130,6 +201,7 @@ export function usePlayer(config: UsePlayerConfig) {
     const p = playerRef.current;
     if (!p?.playVideo || !currentTrack) return;
     p.playVideo();
+    shouldAutoPlayRef.current = true;
     setIsPlaying(true);
   };
 
@@ -137,6 +209,7 @@ export function usePlayer(config: UsePlayerConfig) {
     const p = playerRef.current;
     if (!p?.pauseVideo) return;
     p.pauseVideo();
+    shouldAutoPlayRef.current = false;
     setIsPlaying(false);
   };
 
@@ -147,6 +220,7 @@ export function usePlayer(config: UsePlayerConfig) {
     } catch {
       // no-op
     }
+    shouldAutoPlayRef.current = false;
     setIsPlaying(false);
     setCurrent(0);
   };
@@ -240,20 +314,33 @@ export function usePlayer(config: UsePlayerConfig) {
     playTrackAtIndex(index);
   };
 
-  const startSession = (session: Session) => {
-    const sessionQueue = session.queue.map((track) => ({ ...track }));
-    setQueue(sessionQueue);
-    setCurrentIndex(sessionQueue.length > 0 ? 0 : -1);
-    setVolume(session.volume);
-    setMuted(session.muted);
+  const replaceQueue = (tracks: Track[], startIndex?: number) => {
+    const nextQueue = cloneTracks(tracks);
+    const nextIndex = clampStartIndex(nextQueue.length, startIndex);
+    setQueue(nextQueue);
+    setCurrentIndex(nextIndex);
     setCurrent(0);
-    setDuration(sessionQueue[0]?.duration ?? 0);
+    setDuration(nextIndex >= 0 ? (nextQueue[nextIndex]?.duration ?? 0) : 0);
     setIsPlaying(false);
+    shouldAutoPlayRef.current = false;
 
     const p = playerRef.current;
-    if (p?.cueVideoById && sessionQueue.length > 0) {
-      p.cueVideoById({ videoId: sessionQueue[0].videoId, startSeconds: 0 });
+    if (nextIndex >= 0 && p?.cueVideoById) {
+      p.cueVideoById({ videoId: nextQueue[nextIndex].videoId, startSeconds: 0 });
+    } else {
+      try {
+        p?.stopVideo?.();
+      } catch {
+        // no-op
+      }
     }
+  };
+
+  const startSession = (session: Session) => {
+    const sessionQueue = buildQueueFromSession(session);
+    replaceQueue(sessionQueue, 0);
+    setVolume(session.volume);
+    setMuted(session.muted);
   };
 
   const applyVolume = (v: number, m: boolean) => {
@@ -316,16 +403,31 @@ export function usePlayer(config: UsePlayerConfig) {
   }, [queue, currentIndex]);
 
   useEffect(() => {
+    if (!shouldAutoPlayRef.current || !currentTrack?.videoId) return;
+    const timer = window.setTimeout(() => {
+      const p = playerRef.current;
+      try {
+        p?.playVideo?.();
+      } catch {
+        // no-op
+      }
+    }, 140);
+    return () => window.clearTimeout(timer);
+  }, [currentTrack?.id]);
+
+  useEffect(() => {
     if (!videoId) {
       clearPolling();
       setIsReady(false);
       setIsPlaying(false);
       setDuration(0);
       setCurrent(0);
+      trackSwitchPendingRef.current = false;
     }
 
     return () => {
       clearPolling();
+      clearForcePlayInterval();
     };
   }, [videoId]);
 
@@ -370,11 +472,23 @@ export function usePlayer(config: UsePlayerConfig) {
     setIsReady(true);
 
     if (currentTrack?.videoId) {
-      e.target.cueVideoById?.({ videoId: currentTrack.videoId, startSeconds: 0 });
+      if (shouldAutoPlayRef.current) {
+        e.target.loadVideoById?.({ videoId: currentTrack.videoId, startSeconds: 0 });
+        e.target.playVideo?.();
+        setIsPlaying(true);
+      } else {
+        e.target.cueVideoById?.({ videoId: currentTrack.videoId, startSeconds: 0 });
+      }
     } else {
       const info = extractYoutubeInfo(input.trim());
       if (info.videoId) {
-        e.target.cueVideoById?.({ videoId: info.videoId, startSeconds: info.startSeconds });
+        if (shouldAutoPlayRef.current) {
+          e.target.loadVideoById?.({ videoId: info.videoId, startSeconds: info.startSeconds });
+          e.target.playVideo?.();
+          setIsPlaying(true);
+        } else {
+          e.target.cueVideoById?.({ videoId: info.videoId, startSeconds: info.startSeconds });
+        }
       }
     }
 
@@ -383,9 +497,22 @@ export function usePlayer(config: UsePlayerConfig) {
   };
 
   const onStateChange = (e: { data: number }) => {
-    if (e.data === 1) setIsPlaying(true);
-    if (e.data === 2) setIsPlaying(false);
+    if (e.data === 1) {
+      shouldAutoPlayRef.current = true;
+      trackSwitchPendingRef.current = false;
+      clearForcePlayInterval();
+      setIsPlaying(true);
+    }
+    if (e.data === 2) {
+      if (!trackSwitchPendingRef.current) {
+        shouldAutoPlayRef.current = false;
+        setIsPlaying(false);
+      }
+    }
     if (e.data === 0) {
+      shouldAutoPlayRef.current = false;
+      trackSwitchPendingRef.current = false;
+      clearForcePlayInterval();
       setIsPlaying(false);
       setCurrent(0);
       if (config.autoplayNext) {
@@ -422,6 +549,7 @@ export function usePlayer(config: UsePlayerConfig) {
     previousTrack,
     removeFromQueue,
     clearQueue,
+    replaceQueue,
     removeDuplicates,
     startSession,
     togglePlayPause,

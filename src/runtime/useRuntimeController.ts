@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { RUNTIME_EVENTS } from "../ipc/events";
 import { emitToOptions, listenTypedEvent, type RuntimeCommand } from "../ipc/player.contract";
 import type { RuntimeSnapshot } from "./RuntimeSnapshot";
@@ -143,17 +143,6 @@ function handleRuntimeCommand(command: RuntimeCommand, deps: RuntimeControllerDe
   }
 }
 
-function subscribeRuntimeEvents(deps: RuntimeControllerDeps, getSnapshot: () => RuntimeSnapshot) {
-  return [
-    listenTypedEvent(RUNTIME_EVENTS.requestSnapshot, () => {
-      emitToOptions(RUNTIME_EVENTS.snapshot, getSnapshot()).catch(() => {});
-    }),
-    listenTypedEvent(RUNTIME_EVENTS.command, (command) => {
-      handleRuntimeCommand(command as RuntimeCommand, deps);
-    }),
-  ];
-}
-
 export function useRuntimeController(deps: RuntimeControllerDeps) {
   const snapshot = useMemo(
     () => buildSnapshot(deps),
@@ -178,15 +167,41 @@ export function useRuntimeController(deps: RuntimeControllerDeps) {
     ]
   );
 
+  const depsRef = useRef(deps);
+  const snapshotRef = useRef(snapshot);
+
+  useEffect(() => {
+    depsRef.current = deps;
+  }, [deps]);
+
+  useEffect(() => {
+    snapshotRef.current = snapshot;
+  }, [snapshot]);
+
   useEffect(() => {
     const unlistenFns: Array<() => void> = [];
+    let disposed = false;
     const setup = async () => {
       try {
         const listeners = [
-          ...subscribeRuntimeEvents(deps, () => snapshot),
+          listenTypedEvent(RUNTIME_EVENTS.requestSnapshot, () => {
+            emitToOptions(RUNTIME_EVENTS.snapshot, snapshotRef.current).catch(() => {});
+          }),
+          listenTypedEvent(RUNTIME_EVENTS.command, (command) => {
+            handleRuntimeCommand(command as RuntimeCommand, depsRef.current);
+          }),
         ];
         for (const pending of listeners) {
-          unlistenFns.push(await pending);
+          const unlisten = await pending;
+          if (disposed) {
+            try {
+              unlisten();
+            } catch {
+              // no-op
+            }
+            continue;
+          }
+          unlistenFns.push(unlisten);
         }
       } catch {
         // browser mode
@@ -195,6 +210,7 @@ export function useRuntimeController(deps: RuntimeControllerDeps) {
     setup();
 
     return () => {
+      disposed = true;
       for (const fn of unlistenFns) {
         try {
           fn();
@@ -203,7 +219,7 @@ export function useRuntimeController(deps: RuntimeControllerDeps) {
         }
       }
     };
-  }, [deps, snapshot]);
+  }, []);
 
   useEffect(() => {
     emitToOptions(RUNTIME_EVENTS.snapshot, snapshot).catch(() => {});

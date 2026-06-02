@@ -9,7 +9,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager,
+    AppHandle, Emitter, Manager,
 };
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tauri_plugin_log::{Target, TargetKind};
@@ -22,6 +22,19 @@ struct AppState {
 
 const DOUBLE_CLICK_TIMEOUT_MS: u64 = 500;
 const WINDOW_LABEL: &str = "main";
+const TRAY_ID: &str = "main_tray";
+const APP_NAME: &str = "Taurus Codewave";
+
+#[tauri::command]
+fn set_tray_tooltip(app: AppHandle, current_track: Option<String>) -> Result<(), String> {
+    let tooltip = match current_track {
+        Some(track) if !track.trim().is_empty() => format!("{}\nNow Playing: {}", APP_NAME, track.trim()),
+        _ => APP_NAME.to_string(),
+    };
+
+    let tray = app.tray_by_id(TRAY_ID).ok_or_else(|| "Tray not found".to_string())?;
+    tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())
+}
 
 pub fn run() {
     let state = Arc::new(AppState::default());
@@ -36,11 +49,12 @@ pub fn run() {
                 .targets([Target::new(TargetKind::Stdout)])
                 .build(),
         )
+        .invoke_handler(tauri::generate_handler![set_tray_tooltip])
         .setup(move |app| {
             let state_clone = state_for_setup.clone();
 
             if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+P", move |app, _, _| {
-                if let Err(err) = app.emit("global-shortcut://play-pause", ()) {
+                if let Err(err) = app.emit_to(WINDOW_LABEL, "global-shortcut://play-pause", ()) {
                     log::error!("Failed to emit play/pause shortcut event: {}", err);
                 }
             }) {
@@ -48,7 +62,7 @@ pub fn run() {
                 return Err(Box::new(e));
             }
             if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+N", move |app, _, _| {
-                if let Err(err) = app.emit("global-shortcut://next-track", ()) {
+                if let Err(err) = app.emit_to(WINDOW_LABEL, "global-shortcut://next-track", ()) {
                     log::error!("Failed to emit next-track shortcut event: {}", err);
                 }
             }) {
@@ -56,7 +70,7 @@ pub fn run() {
                 return Err(Box::new(e));
             }
             if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+B", move |app, _, _| {
-                if let Err(err) = app.emit("global-shortcut://previous-track", ()) {
+                if let Err(err) = app.emit_to(WINDOW_LABEL, "global-shortcut://previous-track", ()) {
                     log::error!("Failed to emit previous-track shortcut event: {}", err);
                 }
             }) {
@@ -64,7 +78,7 @@ pub fn run() {
                 return Err(Box::new(e));
             }
             if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+M", move |app, _, _| {
-                if let Err(err) = app.emit("global-shortcut://toggle-mute", ()) {
+                if let Err(err) = app.emit_to(WINDOW_LABEL, "global-shortcut://toggle-mute", ()) {
                     log::error!("Failed to emit toggle-mute shortcut event: {}", err);
                 }
             }) {
@@ -89,8 +103,9 @@ pub fn run() {
             let prev_id = prev_item.id().clone();
             let quit_id = quit_item.id().clone();
 
-            let mut tray_builder = TrayIconBuilder::new()
+            let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
                 .menu(&menu)
+                .tooltip(APP_NAME)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(move |tray, event| match event {
                     TrayIconEvent::Click {
@@ -160,15 +175,15 @@ pub fn run() {
                             }
                         }
                     } else if event.id() == &play_pause_id {
-                        if let Err(err) = app_handle.emit("global-shortcut://play-pause", ()) {
+                        if let Err(err) = app_handle.emit_to(WINDOW_LABEL, "global-shortcut://play-pause", ()) {
                             log::error!("Failed to emit tray play/pause event: {}", err);
                         }
                     } else if event.id() == &next_id {
-                        if let Err(err) = app_handle.emit("global-shortcut://next-track", ()) {
+                        if let Err(err) = app_handle.emit_to(WINDOW_LABEL, "global-shortcut://next-track", ()) {
                             log::error!("Failed to emit tray next-track event: {}", err);
                         }
                     } else if event.id() == &prev_id {
-                        if let Err(err) = app_handle.emit("global-shortcut://previous-track", ()) {
+                        if let Err(err) = app_handle.emit_to(WINDOW_LABEL, "global-shortcut://previous-track", ()) {
                             log::error!("Failed to emit tray previous-track event: {}", err);
                         }
                     } else if event.id() == &quit_id {

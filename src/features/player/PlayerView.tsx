@@ -1,7 +1,8 @@
 import YouTube from "react-youtube";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { useRuntimeController } from "../../runtime/useRuntimeController";
 import { formatTime } from "../../lib/time";
 import { useFocusModes } from "../focus-modes/useFocusModes";
@@ -67,6 +68,13 @@ export function PlayerView() {
     shuffle,
     repeat,
   });
+
+  useEffect(() => {
+    const currentTrackLabel = player.currentTrack?.title || player.currentTrack?.videoId || "";
+    invoke("set_tray_tooltip", { currentTrack: currentTrackLabel }).catch(() => {
+      // browser mode / command unavailable
+    });
+  }, [player.currentTrack?.title, player.currentTrack?.videoId]);
 
   const openOptionsWindow = async () => {
     try {
