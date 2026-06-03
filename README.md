@@ -4,4 +4,4 @@
 
 - **version 1**
 
-![version-1](media/taurusmusicplayer-v1.jpg)
+![version-1](media/taurusmusicplayer-v1.jpeg)
