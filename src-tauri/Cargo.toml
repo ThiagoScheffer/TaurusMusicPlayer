@@ -24,3 +24,4 @@ log = "0.4"
 tauri = { version = "2.9.5", features = ["tray-icon", "image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2"
+ctrlc = "3.4"

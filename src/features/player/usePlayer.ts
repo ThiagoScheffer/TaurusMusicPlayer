@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { extractYoutubeInfo } from "../../lib/youtube";
+import { EXTERNAL_AUDIO_EVENTS } from "../../ipc/events";
+import { listenTypedEvent } from "../../ipc/player.contract";
+import type { ExternalAudioStatePayload } from "../../ipc/player.contract";
 import type { BlacklistEntry, Session, Track } from "../../types/player";
 import { isTrackBlacklisted } from "./useBlacklist";
 import { useGlobalShortcutSubscriptions } from "./usePlayerEvents";
@@ -30,6 +34,7 @@ export function buildQueueFromSession(session: Session): Track[] {
 }
 
 export function usePlayer(config: UsePlayerConfig) {
+  const usesExternalAudio = isTauri();
   const initial = readPersistedPlayerInit({
     defaultVolume: config.defaultVolume,
     rememberLastTrack: config.rememberLastTrack,
@@ -51,6 +56,9 @@ export function usePlayer(config: UsePlayerConfig) {
   const shouldAutoPlayRef = useRef(false);
   const trackSwitchPendingRef = useRef(false);
   const forcePlayIntervalRef = useRef<number | null>(null);
+  const externalAudioStartedRef = useRef(false);
+  const externalClockRef = useRef<number | null>(null);
+  const activeTrackIdRef = useRef<string | null>(null);
   const actionsRef = useRef({
     togglePlayPause: () => {},
     nextTrack: () => {},
@@ -61,6 +69,30 @@ export function usePlayer(config: UsePlayerConfig) {
   const currentTrack = currentIndex >= 0 && currentIndex < queue.length ? queue[currentIndex] : null;
   const videoId = currentTrack?.videoId ?? null;
   const opts = useYouTubePlayerOpts();
+  const trackPlaybackUrl = (track: Track) => track.sourceUrl || `https://www.youtube.com/watch?v=${track.videoId}`;
+
+  const invokeExternalAudio = async (command: string, args?: Record<string, unknown>) => {
+    if (!usesExternalAudio) return false;
+    await invoke(command, args);
+    return true;
+  };
+
+  const startExternalTrack = (track: Track) => {
+    if (!usesExternalAudio) return false;
+    activeTrackIdRef.current = track.id;
+    invokeExternalAudio("play_external_audio", { url: trackPlaybackUrl(track), trackId: track.id })
+      .then(() => {
+        externalAudioStartedRef.current = true;
+        setCurrent(0);
+        setIsPlaying(true);
+      })
+      .catch((error) => {
+        externalAudioStartedRef.current = false;
+        setIsPlaying(false);
+        window.alert(String(error));
+      });
+    return true;
+  };
 
   const clearPolling = () => {
     if (pollRef.current) {
@@ -73,6 +105,13 @@ export function usePlayer(config: UsePlayerConfig) {
     if (forcePlayIntervalRef.current) {
       window.clearInterval(forcePlayIntervalRef.current);
       forcePlayIntervalRef.current = null;
+    }
+  };
+
+  const clearExternalClock = () => {
+    if (externalClockRef.current) {
+      window.clearInterval(externalClockRef.current);
+      externalClockRef.current = null;
     }
   };
 
@@ -105,6 +144,11 @@ export function usePlayer(config: UsePlayerConfig) {
     clearForcePlayInterval();
 
     const p = playerRef.current;
+    if (startExternalTrack(track)) {
+      setIsPlaying(true);
+      return;
+    }
+
     if (p?.loadVideoById) {
       try {
         p.stopVideo?.();
@@ -130,6 +174,7 @@ export function usePlayer(config: UsePlayerConfig) {
   };
 
   useEffect(() => {
+    if (usesExternalAudio) return;
     if (!trackSwitchPendingRef.current || !currentTrack?.videoId) return;
 
     const retryLoadAndPlay = () => {
@@ -152,7 +197,7 @@ export function usePlayer(config: UsePlayerConfig) {
       window.clearTimeout(t2);
       window.clearTimeout(t3);
     };
-  }, [currentTrack?.id, currentTrack?.videoId]);
+  }, [currentTrack?.id, currentTrack?.videoId, usesExternalAudio]);
 
   const addToQueue = () => {
     const trimmed = input.trim();
@@ -189,6 +234,12 @@ export function usePlayer(config: UsePlayerConfig) {
     });
 
     const p = playerRef.current;
+    if (startExternalTrack(track)) {
+      setIsPlaying(true);
+      setCurrent(0);
+      return;
+    }
+
     if (p?.loadVideoById) {
       shouldAutoPlayRef.current = true;
       p.loadVideoById({ videoId: info.videoId, startSeconds: info.startSeconds });
@@ -198,6 +249,18 @@ export function usePlayer(config: UsePlayerConfig) {
   };
 
   const play = () => {
+    if (usesExternalAudio) {
+      if (!currentTrack) return;
+      if (externalAudioStartedRef.current) {
+        invokeExternalAudio("resume_external_audio").catch(() => startExternalTrack(currentTrack));
+      } else {
+        startExternalTrack(currentTrack);
+      }
+      shouldAutoPlayRef.current = true;
+      setIsPlaying(true);
+      return;
+    }
+
     const p = playerRef.current;
     if (!p?.playVideo || !currentTrack) return;
     p.playVideo();
@@ -206,6 +269,13 @@ export function usePlayer(config: UsePlayerConfig) {
   };
 
   const pause = () => {
+    if (usesExternalAudio) {
+      invokeExternalAudio("pause_external_audio").catch(() => {});
+      shouldAutoPlayRef.current = false;
+      setIsPlaying(false);
+      return;
+    }
+
     const p = playerRef.current;
     if (!p?.pauseVideo) return;
     p.pauseVideo();
@@ -214,6 +284,15 @@ export function usePlayer(config: UsePlayerConfig) {
   };
 
   const stop = () => {
+    if (usesExternalAudio) {
+      invokeExternalAudio("stop_external_audio").catch(() => {});
+      externalAudioStartedRef.current = false;
+      shouldAutoPlayRef.current = false;
+      setIsPlaying(false);
+      setCurrent(0);
+      return;
+    }
+
     const p = playerRef.current;
     try {
       p?.stopVideo?.();
@@ -242,7 +321,9 @@ export function usePlayer(config: UsePlayerConfig) {
     }
 
     const p = playerRef.current;
-    p?.seekTo?.(0, true);
+    if (!usesExternalAudio) {
+      p?.seekTo?.(0, true);
+    }
     setCurrent(0);
   };
 
@@ -264,6 +345,10 @@ export function usePlayer(config: UsePlayerConfig) {
         setTimeout(() => {
           const p = playerRef.current;
           const track = next[newIndex];
+          if (track && startExternalTrack(track)) {
+            setIsPlaying(true);
+            return;
+          }
           if (p?.loadVideoById && track) {
             p.loadVideoById({ videoId: track.videoId, startSeconds: 0 });
             setIsPlaying(true);
@@ -326,7 +411,9 @@ export function usePlayer(config: UsePlayerConfig) {
 
     const p = playerRef.current;
     if (nextIndex >= 0 && p?.cueVideoById) {
-      p.cueVideoById({ videoId: nextQueue[nextIndex].videoId, startSeconds: 0 });
+      if (!usesExternalAudio) {
+        p.cueVideoById({ videoId: nextQueue[nextIndex].videoId, startSeconds: 0 });
+      }
     } else {
       try {
         p?.stopVideo?.();
@@ -360,6 +447,12 @@ export function usePlayer(config: UsePlayerConfig) {
   };
 
   const seekTo = (sec: number) => {
+    if (usesExternalAudio) {
+      const next = Math.max(0, sec);
+      invokeExternalAudio("seek_external_audio", { seconds: next }).catch(() => {});
+      return;
+    }
+
     const p = playerRef.current;
     if (!p?.seekTo) return;
     p.seekTo(sec, true);
@@ -394,6 +487,42 @@ export function usePlayer(config: UsePlayerConfig) {
   useGlobalShortcutSubscriptions(() => actionsRef.current);
 
   useEffect(() => {
+    activeTrackIdRef.current = currentTrack?.id ?? null;
+  }, [currentTrack?.id]);
+
+  useEffect(() => {
+    if (!usesExternalAudio) return;
+
+    let disposed = false;
+    const unlistenPromise = listenTypedEvent(EXTERNAL_AUDIO_EVENTS.state, (payload: ExternalAudioStatePayload) => {
+      if (disposed || payload.trackId !== activeTrackIdRef.current) return;
+
+      setDuration(payload.duration ?? 0);
+      if (payload.current !== null && !dragging) {
+        setCurrent(payload.current);
+      }
+      setIsPlaying(payload.isPlaying);
+      externalAudioStartedRef.current = !payload.ended && !payload.error;
+
+      if (payload.ended) {
+        setCurrent(0);
+        if (config.autoplayNext) {
+          actionsRef.current.nextTrack();
+        }
+      }
+
+      if (payload.error) {
+        console.error(payload.error);
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [usesExternalAudio, dragging, config.autoplayNext]);
+
+  useEffect(() => {
     if (currentIndex >= queue.length && queue.length > 0) {
       setCurrentIndex(queue.length - 1);
     }
@@ -403,6 +532,7 @@ export function usePlayer(config: UsePlayerConfig) {
   }, [queue, currentIndex]);
 
   useEffect(() => {
+    if (usesExternalAudio) return;
     if (!shouldAutoPlayRef.current || !currentTrack?.videoId) return;
     const timer = window.setTimeout(() => {
       const p = playerRef.current;
@@ -413,9 +543,14 @@ export function usePlayer(config: UsePlayerConfig) {
       }
     }, 140);
     return () => window.clearTimeout(timer);
-  }, [currentTrack?.id]);
+  }, [currentTrack?.id, usesExternalAudio]);
 
   useEffect(() => {
+    if (usesExternalAudio) {
+      setIsReady(true);
+      return;
+    }
+
     if (!videoId) {
       clearPolling();
       setIsReady(false);
@@ -429,9 +564,10 @@ export function usePlayer(config: UsePlayerConfig) {
       clearPolling();
       clearForcePlayInterval();
     };
-  }, [videoId]);
+  }, [videoId, usesExternalAudio]);
 
   useEffect(() => {
+    if (usesExternalAudio) return;
     if (!isReady || !videoId) return;
 
     clearPolling();
@@ -460,12 +596,39 @@ export function usePlayer(config: UsePlayerConfig) {
     }, 250);
 
     return clearPolling;
-  }, [isReady, videoId, dragging, duration, currentTrack, currentIndex]);
+  }, [isReady, videoId, dragging, duration, currentTrack, currentIndex, usesExternalAudio]);
 
   useEffect(() => {
+    if (usesExternalAudio) {
+      invokeExternalAudio("set_external_audio_volume", { volume: Math.round(volume) }).catch(() => {});
+      invokeExternalAudio("set_external_audio_muted", { muted }).catch(() => {});
+      return;
+    }
+
     if (!isReady || !videoId) return;
     applyVolume(volume, muted);
-  }, [volume, muted, isReady, videoId]);
+  }, [volume, muted, isReady, videoId, usesExternalAudio]);
+
+  useEffect(() => {
+    if (!usesExternalAudio || !isPlaying || dragging) {
+      clearExternalClock();
+      return;
+    }
+
+    let lastTick = Date.now();
+    clearExternalClock();
+    externalClockRef.current = window.setInterval(() => {
+      const now = Date.now();
+      const delta = (now - lastTick) / 1000;
+      lastTick = now;
+      setCurrent((value) => {
+        const next = value + delta;
+        return duration > 0 ? Math.min(next, duration) : next;
+      });
+    }, 250);
+
+    return clearExternalClock;
+  }, [usesExternalAudio, isPlaying, dragging, duration]);
 
   const onReady = (e: { target: YouTubePlayer }) => {
     playerRef.current = e.target;
@@ -558,6 +721,7 @@ export function usePlayer(config: UsePlayerConfig) {
     stop,
     seekTo,
     opts,
+    usesExternalAudio,
     onReady,
     onStateChange,
     onError,

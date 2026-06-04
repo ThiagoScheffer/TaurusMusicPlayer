@@ -1,6 +1,6 @@
 import { emitTo, listen } from "@tauri-apps/api/event";
 import type { Event, UnlistenFn } from "@tauri-apps/api/event";
-import { GLOBAL_SHORTCUT_EVENTS, RUNTIME_EVENTS } from "./events";
+import { EXTERNAL_AUDIO_EVENTS, GLOBAL_SHORTCUT_EVENTS, RUNTIME_EVENTS } from "./events";
 import type { BlacklistEntry, FocusMode } from "../types/player";
 import type { RuntimeSnapshot } from "../runtime/RuntimeSnapshot";
 
@@ -13,9 +13,22 @@ export interface AppEventPayloads {
   [RUNTIME_EVENTS.snapshot]: RuntimeSnapshot;
   [RUNTIME_EVENTS.command]: RuntimeCommand;
   [RUNTIME_EVENTS.settingsExport]: { json: string };
+  [EXTERNAL_AUDIO_EVENTS.state]: ExternalAudioStatePayload;
 }
 
 export type AppEventName = keyof AppEventPayloads;
+
+export interface ExternalAudioStatePayload {
+  trackId: string;
+  current: number | null;
+  duration: number | null;
+  isPlaying: boolean;
+  isPaused: boolean;
+  loading: boolean;
+  seekable: boolean;
+  ended: boolean;
+  error?: string;
+}
 
 export type RuntimeCommand =
   | { type: "queue.play-index"; index: number }

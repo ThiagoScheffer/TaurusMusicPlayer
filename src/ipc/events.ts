@@ -12,7 +12,12 @@ export const RUNTIME_EVENTS = {
   settingsExport: "runtime://settings-export",
 } as const;
 
+export const EXTERNAL_AUDIO_EVENTS = {
+  state: "external-audio://state",
+} as const;
+
 export const APP_EVENTS = {
   ...GLOBAL_SHORTCUT_EVENTS,
   ...RUNTIME_EVENTS,
+  ...EXTERNAL_AUDIO_EVENTS,
 } as const;

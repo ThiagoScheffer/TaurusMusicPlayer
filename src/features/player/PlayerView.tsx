@@ -142,6 +142,10 @@ export function PlayerView() {
     player.addToQueue();
   };
 
+  const hasKnownDuration = player.duration > 0;
+  const seekMax = hasKnownDuration ? Math.max(1, Math.floor(player.duration)) : 1;
+  const durationLabel = player.usesExternalAudio && !hasKnownDuration ? "--:--" : formatTime(player.duration);
+
   return (
     <div className={`page mode-${focusModes.activeMode?.themeIntensity ?? "neutral"}`}>
       <div className="winamp">
@@ -168,7 +172,7 @@ export function PlayerView() {
             <div className="time">
               <span>{formatTime(player.current)}</span>
               <span className="sep">/</span>
-              <span>{formatTime(player.duration)}</span>
+              <span>{durationLabel}</span>
             </div>
             <div className="pill">
               <span className={`dot ${player.isPlaying ? "on" : ""}`} />
@@ -180,8 +184,9 @@ export function PlayerView() {
             <input
               type="range"
               min={0}
-              max={Math.max(1, Math.floor(player.duration))}
-              value={Math.min(player.current, player.duration || 0)}
+              max={seekMax}
+              value={Math.min(player.current, seekMax)}
+              disabled={player.usesExternalAudio && !hasKnownDuration}
               onMouseDown={() => player.setDragging(true)}
               onMouseUp={() => player.setDragging(false)}
               onTouchStart={() => player.setDragging(true)}
@@ -220,7 +225,7 @@ export function PlayerView() {
           </div>
         </div>
 
-        {player.videoId && (
+        {player.videoId && !player.usesExternalAudio && (
           <div className="yt">
             <YouTube
               videoId={player.videoId}
