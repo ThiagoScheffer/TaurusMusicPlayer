@@ -1,14 +1,19 @@
 import { emitTo, listen } from "@tauri-apps/api/event";
 import type { Event, UnlistenFn } from "@tauri-apps/api/event";
-import { EXTERNAL_AUDIO_EVENTS, GLOBAL_SHORTCUT_EVENTS, RUNTIME_EVENTS } from "./events";
+import { EXTERNAL_AUDIO_EVENTS, GLOBAL_SHORTCUT_EVENTS, RUNTIME_EVENTS, TRAY_EVENTS } from "./events";
 import type { BlacklistEntry, FocusMode } from "../types/player";
 import type { RuntimeSnapshot } from "../runtime/RuntimeSnapshot";
 
 export interface AppEventPayloads {
   [GLOBAL_SHORTCUT_EVENTS.playPause]: void;
+  [GLOBAL_SHORTCUT_EVENTS.stopTrack]: void;
   [GLOBAL_SHORTCUT_EVENTS.nextTrack]: void;
   [GLOBAL_SHORTCUT_EVENTS.previousTrack]: void;
   [GLOBAL_SHORTCUT_EVENTS.toggleMute]: void;
+  [TRAY_EVENTS.playPause]: void;
+  [TRAY_EVENTS.stopTrack]: void;
+  [TRAY_EVENTS.nextTrack]: void;
+  [TRAY_EVENTS.previousTrack]: void;
   [RUNTIME_EVENTS.requestSnapshot]: void;
   [RUNTIME_EVENTS.snapshot]: RuntimeSnapshot;
   [RUNTIME_EVENTS.command]: RuntimeCommand;

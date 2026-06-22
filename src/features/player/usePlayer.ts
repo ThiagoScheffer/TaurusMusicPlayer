@@ -61,6 +61,7 @@ export function usePlayer(config: UsePlayerConfig) {
   const activeTrackIdRef = useRef<string | null>(null);
   const actionsRef = useRef({
     togglePlayPause: () => {},
+    stop: () => {},
     nextTrack: () => {},
     previousTrack: () => {},
     toggleMuted: () => {},
@@ -469,6 +470,7 @@ export function usePlayer(config: UsePlayerConfig) {
   };
 
   actionsRef.current.togglePlayPause = togglePlayPause;
+  actionsRef.current.stop = stop;
   actionsRef.current.nextTrack = nextTrack;
   actionsRef.current.previousTrack = previousTrack;
   actionsRef.current.toggleMuted = toggleMuted;

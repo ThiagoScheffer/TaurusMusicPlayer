@@ -5,14 +5,14 @@
 
 pub mod playback;
 
-use std::io::{BufRead, BufReader, Read, Write};
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::io::{BufRead, BufReader, Write};
 use std::process::Child;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use serde::Serialize;
-use serde_json::{json, Value};
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
@@ -30,13 +30,12 @@ struct AppState {
 
 #[derive(Default)]
 struct ExternalAudioState {
-    controller: Mutex<Option<ExternalAudioController>>,
-    next_request_id: AtomicU64,
+    process: Mutex<Option<ExternalAudioProcess>>,
+    next_ipc_id: AtomicU64,
 }
 
-struct ExternalAudioController {
+struct ExternalAudioProcess {
     child: Child,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     ipc_path: String,
 }
 
@@ -51,7 +50,6 @@ struct ExternalAudioSnapshot {
     loading: bool,
     seekable: bool,
     ended: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -59,6 +57,22 @@ const DOUBLE_CLICK_TIMEOUT_MS: u64 = 500;
 const WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "main_tray";
 const APP_NAME: &str = "Taurus Codewave";
+const EVENT_PLAY_PAUSE: &str = "global-shortcut://play-pause";
+const EVENT_NEXT_TRACK: &str = "global-shortcut://next-track";
+const EVENT_PREVIOUS_TRACK: &str = "global-shortcut://previous-track";
+const EVENT_TOGGLE_MUTE: &str = "global-shortcut://toggle-mute";
+const TRAY_EVENT_PLAY_PAUSE: &str = "tray://play-pause";
+const TRAY_EVENT_STOP_TRACK: &str = "tray://stop-track";
+const TRAY_EVENT_NEXT_TRACK: &str = "tray://next-track";
+const TRAY_EVENT_PREVIOUS_TRACK: &str = "tray://previous-track";
+
+fn emit_player_control(app: &AppHandle, event: &str, label: &str) {
+    // Broadcast instead of targeting only the main window so tray commands still
+    // reach the player while the compact window is hidden to the tray.
+    if let Err(err) = app.emit(event, ()) {
+        log::error!("Failed to emit {label} player control event: {err}");
+    }
+}
 
 #[tauri::command]
 fn set_tray_tooltip(app: AppHandle, current_track: Option<String>) -> Result<(), String> {
@@ -71,28 +85,6 @@ fn set_tray_tooltip(app: AppHandle, current_track: Option<String>) -> Result<(),
     tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())
 }
 
-impl ExternalAudioState {
-    fn request_id(&self) -> u64 {
-        self.next_request_id.fetch_add(1, Ordering::Relaxed) + 1
-    }
-}
-
-impl ExternalAudioSnapshot {
-    fn loading(track_id: String) -> Self {
-        Self {
-            track_id,
-            current: Some(0.0),
-            duration: None,
-            is_playing: false,
-            is_paused: false,
-            loading: true,
-            seekable: false,
-            ended: false,
-            error: None,
-        }
-    }
-}
-
 fn kill_audio_child(child: &mut Child) {
     if let Err(error) = child.kill() {
         log::debug!("mpv process was already stopped or could not be killed: {}", error);
@@ -102,65 +94,32 @@ fn kill_audio_child(child: &mut Child) {
     }
 }
 
-fn stop_audio_controller(controller: &mut ExternalAudioController) {
-    let _ = write_mpv_json(
-        &controller.writer,
-        json!({"command": ["quit"], "request_id": 0}),
-    );
-    kill_audio_child(&mut controller.child);
-    cleanup_ipc_path(&controller.ipc_path);
+fn stop_audio_process(process: &mut ExternalAudioProcess) {
+    kill_audio_child(&mut process.child);
+    cleanup_ipc_path(&process.ipc_path);
 }
 
-fn write_mpv_json(writer: &Arc<Mutex<Box<dyn Write + Send>>>, payload: Value) -> Result<(), String> {
-    let mut guard = writer
-        .lock()
-        .map_err(|_| "mpv IPC writer lock was poisoned".to_string())?;
-    let line = format!("{payload}\n");
-    guard
-        .write_all(line.as_bytes())
-        .and_then(|_| guard.flush())
-        .map_err(|error| format!("Failed to send command to mpv IPC: {error}"))
-}
-
-fn emit_external_audio_state(app: &AppHandle, snapshot: &ExternalAudioSnapshot) {
-    if let Err(error) = app.emit_to(WINDOW_LABEL, "external-audio://state", snapshot.clone()) {
-        log::error!("Failed to emit external audio state: {}", error);
-    }
-}
-
-fn unique_ipc_path(track_id: &str) -> String {
-    let safe_track_id = track_id
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .take(32)
-        .collect::<String>();
-    let suffix = format!("{}-{}", std::process::id(), unique_millis());
+fn next_ipc_path(state: &ExternalAudioState) -> String {
+    let id = state.next_ipc_id.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
 
     #[cfg(windows)]
     {
-        format!(r"\\.\pipe\taurus-codewave-{safe_track_id}-{suffix}")
+        format!(r"\\.\pipe\taurus-codewave-mpv-{pid}-{id}")
     }
 
     #[cfg(not(windows))]
     {
         std::env::temp_dir()
-            .join(format!("taurus-codewave-{safe_track_id}-{suffix}.sock"))
+            .join(format!("taurus-codewave-mpv-{pid}-{id}.sock"))
             .to_string_lossy()
             .into_owned()
     }
 }
 
-fn unique_millis() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default()
-}
-
 #[cfg(windows)]
 fn cleanup_ipc_path(_path: &str) {
-    // Windows mpv IPC uses named pipes, which are process-owned and do not need
-    // filesystem cleanup like Unix socket paths.
+    // Windows mpv IPC uses named pipes, which are removed by the OS.
 }
 
 #[cfg(not(windows))]
@@ -169,157 +128,156 @@ fn cleanup_ipc_path(path: &str) {
 }
 
 #[cfg(windows)]
-fn connect_mpv_ipc(path: &str) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>), String> {
-    use std::fs::OpenOptions;
-
-    let started = Instant::now();
-    loop {
-        match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(file) => {
-                let reader = file
-                    .try_clone()
-                    .map_err(|error| format!("Failed to clone mpv named pipe: {error}"))?;
-                return Ok((Box::new(reader), Box::new(file)));
+fn request_json_from_mpv_ipc(path: &str, payload: Value) -> Result<Value, String> {
+    let mut last_error = None;
+    let mut pipe = {
+        let mut opened = None;
+        for _ in 0..40 {
+            match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+                Ok(pipe) => {
+                    opened = Some(pipe);
+                    break;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    thread::sleep(Duration::from_millis(25));
+                }
             }
-            Err(error) if started.elapsed() < Duration::from_secs(5) => {
-                log::debug!("Waiting for mpv IPC pipe '{}': {}", path, error);
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => return Err(format!("Timed out connecting to mpv IPC pipe '{path}': {error}")),
         }
-    }
+        match opened {
+            Some(pipe) => pipe,
+            None => {
+                return Err(format!(
+                    "Failed to open mpv IPC pipe: {}",
+                    last_error
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "unknown error".to_string())
+                ));
+            }
+        }
+    };
+    writeln!(pipe, "{payload}").map_err(|error| format!("Failed to write mpv IPC command: {error}"))?;
+    pipe.flush()
+        .map_err(|error| format!("Failed to flush mpv IPC command: {error}"))?;
+
+    let mut line = String::new();
+    let mut reader = BufReader::new(pipe);
+    reader
+        .read_line(&mut line)
+        .map_err(|error| format!("Failed to read mpv IPC response: {error}"))?;
+    serde_json::from_str(&line).map_err(|error| format!("Failed to parse mpv IPC response: {error}"))
 }
 
 #[cfg(not(windows))]
-fn connect_mpv_ipc(path: &str) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>), String> {
+fn request_json_from_mpv_ipc(path: &str, payload: Value) -> Result<Value, String> {
     use std::os::unix::net::UnixStream;
 
-    let started = Instant::now();
-    loop {
-        match UnixStream::connect(path) {
-            Ok(stream) => {
-                let reader = stream
-                    .try_clone()
-                    .map_err(|error| format!("Failed to clone mpv IPC socket: {error}"))?;
-                return Ok((Box::new(reader), Box::new(stream)));
-            }
-            Err(error) if started.elapsed() < Duration::from_secs(5) => {
-                log::debug!("Waiting for mpv IPC socket '{}': {}", path, error);
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => return Err(format!("Timed out connecting to mpv IPC socket '{path}': {error}")),
-        }
+    let mut socket = UnixStream::connect(path).map_err(|error| format!("Failed to open mpv IPC socket: {error}"))?;
+    writeln!(socket, "{payload}").map_err(|error| format!("Failed to write mpv IPC command: {error}"))?;
+    socket
+        .flush()
+        .map_err(|error| format!("Failed to flush mpv IPC command: {error}"))?;
+
+    let mut line = String::new();
+    let mut reader = BufReader::new(socket);
+    reader
+        .read_line(&mut line)
+        .map_err(|error| format!("Failed to read mpv IPC response: {error}"))?;
+    serde_json::from_str(&line).map_err(|error| format!("Failed to parse mpv IPC response: {error}"))
+}
+
+fn send_mpv_command(process: &ExternalAudioProcess, command: serde_json::Value) -> Result<(), String> {
+    let response = request_json_from_mpv_ipc(&process.ipc_path, json!({ "command": command }))?;
+    match response.get("error").and_then(Value::as_str) {
+        Some("success") | None => Ok(()),
+        Some(error) => Err(format!("mpv command failed: {error}")),
     }
 }
 
-fn spawn_mpv_state_reader(app: AppHandle, track_id: String, reader: Box<dyn Read + Send>) {
+fn read_mpv_property(ipc_path: &str, property: &str) -> Result<Value, String> {
+    let response = request_json_from_mpv_ipc(ipc_path, json!({ "command": ["get_property", property] }))?;
+    match response.get("error").and_then(Value::as_str) {
+        Some("success") | None => Ok(response.get("data").cloned().unwrap_or(Value::Null)),
+        Some(error) => Err(format!("mpv get_property {property} failed: {error}")),
+    }
+}
+
+fn read_mpv_f64(ipc_path: &str, property: &str) -> Option<f64> {
+    read_mpv_property(ipc_path, property).ok().and_then(|value| value.as_f64())
+}
+
+fn read_mpv_bool(ipc_path: &str, property: &str) -> Option<bool> {
+    read_mpv_property(ipc_path, property).ok().and_then(|value| value.as_bool())
+}
+
+fn emit_external_audio_state(app: &AppHandle, snapshot: ExternalAudioSnapshot) {
+    if let Err(error) = app.emit("external-audio://state", snapshot) {
+        log::error!("Failed to emit external audio state: {}", error);
+    }
+}
+
+fn spawn_external_audio_poller(app: AppHandle, track_id: String, ipc_path: String) {
     thread::spawn(move || {
-        let mut snapshot = ExternalAudioSnapshot::loading(track_id);
-        let reader = BufReader::new(reader);
+        emit_external_audio_state(
+            &app,
+            ExternalAudioSnapshot {
+                track_id: track_id.clone(),
+                current: None,
+                duration: None,
+                is_playing: false,
+                is_paused: false,
+                loading: true,
+                seekable: false,
+                ended: false,
+                error: None,
+            },
+        );
 
-        for line in reader.lines() {
-            let Ok(line) = line else {
+        loop {
+            thread::sleep(Duration::from_millis(500));
+
+            let current = read_mpv_f64(&ipc_path, "time-pos");
+            let duration = read_mpv_f64(&ipc_path, "duration");
+            let paused = read_mpv_bool(&ipc_path, "pause").unwrap_or(false);
+            let idle = read_mpv_bool(&ipc_path, "idle-active").unwrap_or(false);
+
+            if current.is_none() && duration.is_none() && idle {
+                emit_external_audio_state(
+                    &app,
+                    ExternalAudioSnapshot {
+                        track_id: track_id.clone(),
+                        current: Some(0.0),
+                        duration,
+                        is_playing: false,
+                        is_paused: false,
+                        loading: false,
+                        seekable: false,
+                        ended: true,
+                        error: None,
+                    },
+                );
                 break;
-            };
-            let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-
-            if apply_mpv_event(&mut snapshot, &value) {
-                emit_external_audio_state(&app, &snapshot);
             }
+
+            let seekable = duration.is_some_and(|value| value > 0.0);
+            emit_external_audio_state(
+                &app,
+                ExternalAudioSnapshot {
+                    track_id: track_id.clone(),
+                    current,
+                    duration,
+                    is_playing: !paused && current.is_some(),
+                    is_paused: paused,
+                    loading: current.is_none() && duration.is_none(),
+                    seekable,
+                    ended: false,
+                    error: None,
+                },
+            );
         }
 
-        snapshot.loading = false;
-        snapshot.is_playing = false;
-        snapshot.is_paused = true;
-        if !snapshot.ended {
-            snapshot.error = Some("mpv IPC stream closed".to_string());
-        }
-        emit_external_audio_state(&app, &snapshot);
+        cleanup_ipc_path(&ipc_path);
     });
-}
-
-fn apply_mpv_event(snapshot: &mut ExternalAudioSnapshot, value: &Value) -> bool {
-    let Some(event) = value.get("event").and_then(Value::as_str) else {
-        return false;
-    };
-
-    match event {
-        "file-loaded" => {
-            snapshot.loading = false;
-            snapshot.ended = false;
-            true
-        }
-        "end-file" => {
-            snapshot.loading = false;
-            snapshot.is_playing = false;
-            snapshot.is_paused = true;
-            snapshot.ended = true;
-            true
-        }
-        "shutdown" => {
-            snapshot.loading = false;
-            snapshot.is_playing = false;
-            snapshot.is_paused = true;
-            true
-        }
-        "property-change" => apply_property_change(snapshot, value),
-        _ => false,
-    }
-}
-
-fn apply_property_change(snapshot: &mut ExternalAudioSnapshot, value: &Value) -> bool {
-    let Some(name) = value.get("name").and_then(Value::as_str) else {
-        return false;
-    };
-    let data = value.get("data").unwrap_or(&Value::Null);
-
-    match name {
-        "time-pos" | "playback-time" => {
-            snapshot.current = data.as_f64();
-            true
-        }
-        "duration" => {
-            snapshot.duration = data.as_f64();
-            snapshot.seekable = snapshot.duration.unwrap_or(0.0) > 0.0;
-            true
-        }
-        "pause" => {
-            let paused = data.as_bool().unwrap_or(false);
-            snapshot.is_paused = paused;
-            snapshot.is_playing = !paused && !snapshot.loading && !snapshot.ended;
-            true
-        }
-        "mute" | "volume" => true,
-        "idle-active" => {
-            snapshot.loading = data.as_bool().unwrap_or(false);
-            true
-        }
-        "eof-reached" => {
-            snapshot.ended = data.as_bool().unwrap_or(false);
-            if snapshot.ended {
-                snapshot.is_playing = false;
-                snapshot.is_paused = true;
-            }
-            true
-        }
-        _ => false,
-    }
-}
-
-fn observe_mpv_properties(state: &ExternalAudioState, writer: &Arc<Mutex<Box<dyn Write + Send>>>) -> Result<(), String> {
-    for property in ["time-pos", "playback-time", "duration", "pause", "mute", "volume", "idle-active", "eof-reached"] {
-        let request_id = state.request_id();
-        write_mpv_json(
-            writer,
-            json!({
-                "command": ["observe_property", request_id, property],
-                "request_id": request_id
-            }),
-        )?;
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -327,38 +285,24 @@ fn play_external_audio(
     app: AppHandle,
     state: State<'_, ExternalAudioState>,
     url: String,
-    track_id: String,
+    track_id: Option<String>,
 ) -> Result<(), String> {
     let mut guard = state
-        .controller
+        .process
         .lock()
         .map_err(|_| "External audio state lock was poisoned".to_string())?;
 
-    if let Some(mut controller) = guard.take() {
-        stop_audio_controller(&mut controller);
+    if let Some(mut process) = guard.take() {
+        stop_audio_process(&mut process);
     }
 
-    let ipc_path = unique_ipc_path(&track_id);
+    let ipc_path = next_ipc_path(&state);
     cleanup_ipc_path(&ipc_path);
-    let mut child = playback::play_youtube_audio_with_ipc(&url, &ipc_path).map_err(|error| error.to_string())?;
-    let (reader, writer) = match connect_mpv_ipc(&ipc_path) {
-        Ok(parts) => parts,
-        Err(error) => {
-            kill_audio_child(&mut child);
-            cleanup_ipc_path(&ipc_path);
-            return Err(error);
-        }
-    };
-
-    let writer = Arc::new(Mutex::new(writer));
-    let snapshot = ExternalAudioSnapshot::loading(track_id.clone());
-    emit_external_audio_state(&app, &snapshot);
-    spawn_mpv_state_reader(app, track_id.clone(), reader);
-    observe_mpv_properties(&state, &writer)?;
-
-    *guard = Some(ExternalAudioController {
+    let child = playback::play_youtube_audio_with_ipc(&url, &ipc_path).map_err(|error| error.to_string())?;
+    let track_id = track_id.unwrap_or_else(|| url.clone());
+    spawn_external_audio_poller(app, track_id.clone(), ipc_path.clone());
+    *guard = Some(ExternalAudioProcess {
         child,
-        writer,
         ipc_path,
     });
     Ok(())
@@ -367,41 +311,35 @@ fn play_external_audio(
 #[tauri::command]
 fn pause_external_audio(state: State<'_, ExternalAudioState>) -> Result<(), String> {
     let guard = state
-        .controller
+        .process
         .lock()
         .map_err(|_| "External audio state lock was poisoned".to_string())?;
-    let controller = guard
+    let process = guard
         .as_ref()
         .ok_or_else(|| "No external audio process is running".to_string())?;
-    write_mpv_json(
-        &controller.writer,
-        json!({"command": ["set_property", "pause", true], "request_id": state.request_id()}),
-    )
+    send_mpv_command(process, json!(["set_property", "pause", true]))
 }
 
 #[tauri::command]
 fn resume_external_audio(state: State<'_, ExternalAudioState>) -> Result<(), String> {
     let guard = state
-        .controller
+        .process
         .lock()
         .map_err(|_| "External audio state lock was poisoned".to_string())?;
-    let controller = guard
+    let process = guard
         .as_ref()
         .ok_or_else(|| "No external audio process is running".to_string())?;
-    write_mpv_json(
-        &controller.writer,
-        json!({"command": ["set_property", "pause", false], "request_id": state.request_id()}),
-    )
+    send_mpv_command(process, json!(["set_property", "pause", false]))
 }
 
 #[tauri::command]
 fn stop_external_audio(state: State<'_, ExternalAudioState>) -> Result<(), String> {
     let mut guard = state
-        .controller
+        .process
         .lock()
         .map_err(|_| "External audio state lock was poisoned".to_string())?;
-    if let Some(mut controller) = guard.take() {
-        stop_audio_controller(&mut controller);
+    if let Some(mut process) = guard.take() {
+        stop_audio_process(&mut process);
     }
     Ok(())
 }
@@ -410,78 +348,42 @@ fn stop_external_audio(state: State<'_, ExternalAudioState>) -> Result<(), Strin
 fn set_external_audio_volume(state: State<'_, ExternalAudioState>, volume: u8) -> Result<(), String> {
     let volume = volume.min(100);
     let guard = state
-        .controller
+        .process
         .lock()
         .map_err(|_| "External audio state lock was poisoned".to_string())?;
-    let Some(controller) = guard.as_ref() else {
+    let Some(process) = guard.as_ref() else {
         return Ok(());
     };
-    write_mpv_json(
-        &controller.writer,
-        json!({"command": ["set_property", "volume", volume], "request_id": state.request_id()}),
-    )
+    send_mpv_command(process, json!(["set_property", "volume", volume]))
 }
 
 #[tauri::command]
 fn set_external_audio_muted(state: State<'_, ExternalAudioState>, muted: bool) -> Result<(), String> {
     let guard = state
-        .controller
+        .process
         .lock()
         .map_err(|_| "External audio state lock was poisoned".to_string())?;
-    let Some(controller) = guard.as_ref() else {
+    let Some(process) = guard.as_ref() else {
         return Ok(());
     };
-    write_mpv_json(
-        &controller.writer,
-        json!({"command": ["set_property", "mute", muted], "request_id": state.request_id()}),
-    )
+    send_mpv_command(process, json!(["set_property", "mute", muted]))
 }
 
 #[tauri::command]
 fn seek_external_audio(state: State<'_, ExternalAudioState>, seconds: f64) -> Result<(), String> {
     let seconds = seconds.max(0.0);
     let guard = state
-        .controller
+        .process
         .lock()
         .map_err(|_| "External audio state lock was poisoned".to_string())?;
-    let controller = guard
+    let process = guard
         .as_ref()
         .ok_or_else(|| "No external audio process is running".to_string())?;
-    write_mpv_json(
-        &controller.writer,
-        json!({"command": ["seek", seconds, "absolute"], "request_id": state.request_id()}),
-    )
-}
-
-#[cfg(windows)]
-fn optimize_webview2_for_audio_only() {
-    const KEY: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
-    const AUDIO_ONLY_FLAGS: &[&str] = &[
-        "--disable-gpu",
-        "--disable-accelerated-video-decode",
-        "--disable-accelerated-video-encode",
-    ];
-
-    // WebView2 GPU flags are Windows-only and must be set before WebView2/Tauri
-    // initializes. This app is audio-only, so reducing GPU/video acceleration
-    // memory is intentional for this workload.
-    let mut args = std::env::var(KEY).unwrap_or_default();
-    for flag in AUDIO_ONLY_FLAGS {
-        if !args.split_whitespace().any(|existing| existing == *flag) {
-            if !args.trim().is_empty() {
-                args.push(' ');
-            }
-            args.push_str(flag);
-        }
-    }
-
-    std::env::set_var(KEY, args);
+    send_mpv_command(process, json!(["seek", seconds, "absolute"]))
 }
 
 pub fn run() {
-    #[cfg(windows)]
-    optimize_webview2_for_audio_only();
-
+    
     let state = Arc::new(AppState::default());
     let state_for_setup = state.clone();
     let state_for_window = state.clone();
@@ -509,33 +411,25 @@ pub fn run() {
             let state_clone = state_for_setup.clone();
 
             if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+P", move |app, _, _| {
-                if let Err(err) = app.emit_to(WINDOW_LABEL, "global-shortcut://play-pause", ()) {
-                    log::error!("Failed to emit play/pause shortcut event: {}", err);
-                }
+                emit_player_control(app, EVENT_PLAY_PAUSE, "play/pause shortcut");
             }) {
                 log::error!("Failed to register Ctrl+Alt+P global shortcut: {}", e);
                 return Err(Box::new(e));
             }
             if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+N", move |app, _, _| {
-                if let Err(err) = app.emit_to(WINDOW_LABEL, "global-shortcut://next-track", ()) {
-                    log::error!("Failed to emit next-track shortcut event: {}", err);
-                }
+                emit_player_control(app, EVENT_NEXT_TRACK, "next-track shortcut");
             }) {
                 log::error!("Failed to register Ctrl+Alt+N global shortcut: {}", e);
                 return Err(Box::new(e));
             }
             if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+B", move |app, _, _| {
-                if let Err(err) = app.emit_to(WINDOW_LABEL, "global-shortcut://previous-track", ()) {
-                    log::error!("Failed to emit previous-track shortcut event: {}", err);
-                }
+                emit_player_control(app, EVENT_PREVIOUS_TRACK, "previous-track shortcut");
             }) {
                 log::error!("Failed to register Ctrl+Alt+B global shortcut: {}", e);
                 return Err(Box::new(e));
             }
             if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+M", move |app, _, _| {
-                if let Err(err) = app.emit_to(WINDOW_LABEL, "global-shortcut://toggle-mute", ()) {
-                    log::error!("Failed to emit toggle-mute shortcut event: {}", err);
-                }
+                emit_player_control(app, EVENT_TOGGLE_MUTE, "toggle-mute shortcut");
             }) {
                 log::error!("Failed to register Ctrl+Alt+M global shortcut: {}", e);
                 return Err(Box::new(e));
@@ -543,17 +437,26 @@ pub fn run() {
 
             let show_hide_item = MenuItem::with_id(app, "show_hide", "Show / Hide", true, None::<&str>)?;
             let play_pause_item = MenuItem::with_id(app, "play_pause", "Play / Pause", true, None::<&str>)?;
+            let stop_item = MenuItem::with_id(app, "stop_track", "Stop", true, None::<&str>)?;
             let next_item = MenuItem::with_id(app, "next_track", "Next Track", true, None::<&str>)?;
             let prev_item = MenuItem::with_id(app, "previous_track", "Previous Track", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
             let menu = Menu::with_items(
                 app,
-                &[&show_hide_item, &play_pause_item, &next_item, &prev_item, &quit_item],
+                &[
+                    &show_hide_item,
+                    &play_pause_item,
+                    &stop_item,
+                    &next_item,
+                    &prev_item,
+                    &quit_item,
+                ],
             )?;
 
             let show_hide_id = show_hide_item.id().clone();
             let play_pause_id = play_pause_item.id().clone();
+            let stop_id = stop_item.id().clone();
             let next_id = next_item.id().clone();
             let prev_id = prev_item.id().clone();
             let quit_id = quit_item.id().clone();
@@ -611,6 +514,7 @@ pub fn run() {
                     _ => {}
                 })
                 .on_menu_event(move |app_handle, event| {
+                    log::debug!("Tray menu item selected: {:?}", event.id());
                     if event.id() == &show_hide_id {
                         if let Some(window) = app_handle.get_webview_window(WINDOW_LABEL) {
                             match window.is_visible() {
@@ -630,22 +534,18 @@ pub fn run() {
                             }
                         }
                     } else if event.id() == &play_pause_id {
-                        if let Err(err) = app_handle.emit_to(WINDOW_LABEL, "global-shortcut://play-pause", ()) {
-                            log::error!("Failed to emit tray play/pause event: {}", err);
-                        }
+                        emit_player_control(app_handle, TRAY_EVENT_PLAY_PAUSE, "tray play/pause");
+                    } else if event.id() == &stop_id {
+                        emit_player_control(app_handle, TRAY_EVENT_STOP_TRACK, "tray stop");
                     } else if event.id() == &next_id {
-                        if let Err(err) = app_handle.emit_to(WINDOW_LABEL, "global-shortcut://next-track", ()) {
-                            log::error!("Failed to emit tray next-track event: {}", err);
-                        }
+                        emit_player_control(app_handle, TRAY_EVENT_NEXT_TRACK, "tray next-track");
                     } else if event.id() == &prev_id {
-                        if let Err(err) = app_handle.emit_to(WINDOW_LABEL, "global-shortcut://previous-track", ()) {
-                            log::error!("Failed to emit tray previous-track event: {}", err);
-                        }
+                        emit_player_control(app_handle, TRAY_EVENT_PREVIOUS_TRACK, "tray previous-track");
                     } else if event.id() == &quit_id {
                         let state = app_handle.state::<ExternalAudioState>();
-                        if let Ok(mut guard) = state.controller.lock() {
-                            if let Some(mut controller) = guard.take() {
-                                stop_audio_controller(&mut controller);
+                        if let Ok(mut guard) = state.process.lock() {
+                            if let Some(mut process) = guard.take() {
+                                stop_audio_process(&mut process);
                             }
                         }
                         app_handle.exit(0);
