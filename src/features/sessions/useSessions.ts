@@ -167,6 +167,10 @@ export function useSessions({ queue, volume, muted, startSessionInPlayer }: UseS
     );
   };
 
+  const replaceSessions = (nextSessions: Session[]) => {
+    setSessions(nextSessions.map((session) => ({ ...session, queue: cloneQueue(session.queue) })));
+  };
+
   return {
     sessions,
     saveCurrentQueueAsSession,
@@ -178,5 +182,6 @@ export function useSessions({ queue, volume, muted, startSessionInPlayer }: UseS
     appendCurrentQueueToSession,
     replaceSessionQueueWithCurrent,
     removeTrackFromSession,
+    replaceSessions,
   };
 }

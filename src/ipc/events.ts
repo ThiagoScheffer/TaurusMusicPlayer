@@ -18,6 +18,7 @@ export const RUNTIME_EVENTS = {
   snapshot: "runtime://snapshot",
   command: "runtime://command",
   settingsExport: "runtime://settings-export",
+  settingsImportResult: "runtime://settings-import-result",
 } as const;
 
 export const EXTERNAL_AUDIO_EVENTS = {

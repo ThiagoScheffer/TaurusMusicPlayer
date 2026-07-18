@@ -130,6 +130,20 @@ export function useAppSettings() {
     });
   };
 
+  const replaceSettings = (next: AppSettings) => {
+    updateSettings(next);
+    setImportError(null);
+  };
+
+  const clearTaurusData = () => {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key?.startsWith("taurus.")) keys.push(key);
+    }
+    for (const key of keys) localStorage.removeItem(key);
+  };
+
   const exportData = () => {
     const payload = {
       version: 1,
@@ -195,6 +209,8 @@ export function useAppSettings() {
   return {
     settings,
     setPlayback,
+    replaceSettings,
+    clearTaurusData,
     exportData,
     importData,
     resetAllData,

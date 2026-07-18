@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { RUNTIME_EVENTS } from "../../ipc/events";
 import { emitToMain, listenTypedEvent, type RuntimeCommand } from "../../ipc/player.contract";
 import type { FocusMode, Session } from "../../types/player";
@@ -8,10 +8,13 @@ import { FocusTimerPanel } from "../focus-timer/FocusTimerPanel";
 import { SessionsPanel } from "../sessions/SessionsPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import type { BlacklistEntryType } from "../../types/player";
+import { confirmBackupReplace, openBackupFile, saveBackupFile } from "./backupFile";
+import { parseBackupJson } from "./backup";
 
 type Tab = "queue" | "sessions" | "focusTimer" | "focusModes" | "hotkeys" | "settings" | "blacklist";
 
 const EMPTY_SNAPSHOT: RuntimeSnapshot = {
+  input: "",
   queue: [],
   currentIndex: -1,
   currentTrack: null,
@@ -54,14 +57,24 @@ const toCommand = (command: RuntimeCommand) =>
 export function OptionsWindow() {
   const [tab, setTab] = useState<Tab>("queue");
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(EMPTY_SNAPSHOT);
-  const [settingsExportJson, setSettingsExportJson] = useState("");
+  const [backupStatus, setBackupStatus] = useState<string | null>(null);
+  const exportPendingRef = useRef(false);
 
   useEffect(() => {
     const unlistenSnapshotPromise = listenTypedEvent(RUNTIME_EVENTS.snapshot, (payload) => {
       setSnapshot(payload);
     });
     const unlistenExportPromise = listenTypedEvent(RUNTIME_EVENTS.settingsExport, (payload) => {
-      setSettingsExportJson(payload.json);
+      if (!exportPendingRef.current) return;
+      exportPendingRef.current = false;
+      void saveBackupFile(payload.json).then((result) => {
+        if (result.status === "completed") setBackupStatus("Backup exported successfully.");
+        if (result.status === "cancelled") setBackupStatus("Backup export cancelled.");
+        if (result.status === "error") setBackupStatus(`Backup export failed: ${result.error}`);
+      });
+    });
+    const unlistenImportPromise = listenTypedEvent(RUNTIME_EVENTS.settingsImportResult, (payload) => {
+      setBackupStatus(payload.ok ? "Backup imported successfully. Playback is stopped." : `Backup import failed: ${payload.error ?? "Unknown error."}`);
     });
 
     emitToMain(RUNTIME_EVENTS.requestSnapshot).catch(() => {});
@@ -69,6 +82,7 @@ export function OptionsWindow() {
     return () => {
       unlistenSnapshotPromise.then((fn) => fn()).catch(() => {});
       unlistenExportPromise.then((fn) => fn()).catch(() => {});
+      unlistenImportPromise.then((fn) => fn()).catch(() => {});
     };
   }, []);
 
@@ -87,6 +101,39 @@ export function OptionsWindow() {
     ],
     [snapshot.queue.length]
   );
+
+  const exportBackup = () => {
+    setBackupStatus("Preparing backup...");
+    exportPendingRef.current = true;
+    toCommand({ type: "settings.export-request" });
+  };
+
+  const importBackup = () => {
+    void openBackupFile().then((result) => {
+      if (result.status === "cancelled") {
+        setBackupStatus("Backup import cancelled.");
+        return;
+      }
+      if (result.status === "error" || !result.json) {
+        setBackupStatus(`Backup import failed: ${result.status === "error" ? result.error : "No file contents found."}`);
+        return;
+      }
+      const backupJson = result.json;
+      const validation = parseBackupJson(backupJson);
+      if (!validation.ok) {
+        setBackupStatus(`Backup import failed: ${validation.error}`);
+        return;
+      }
+      void confirmBackupReplace().then((confirmed) => {
+        if (!confirmed) {
+          setBackupStatus("Backup import cancelled.");
+          return;
+        }
+        setBackupStatus("Importing backup...");
+        toCommand({ type: "settings.import", json: backupJson });
+      });
+    });
+  };
 
   return (
     <div className="options-app">
@@ -197,19 +244,14 @@ export function OptionsWindow() {
             setShortBreakMinutes={(minutes) => toCommand({ type: "focus-timer.set-short-break-minutes", minutes })}
             setLongBreakMinutes={(minutes) => toCommand({ type: "focus-timer.set-long-break-minutes", minutes })}
             setBreakBehavior={(behavior) => toCommand({ type: "focus-timer.set-break-behavior", behavior })}
-            exportData={() => {
-              toCommand({ type: "settings.export-request" });
-              return settingsExportJson;
-            }}
-            importData={(json) => {
-              toCommand({ type: "settings.import", json });
-              return { ok: true };
-            }}
+            exportBackup={exportBackup}
+            importBackup={importBackup}
             resetAllData={() => {
               toCommand({ type: "settings.reset" });
               return true;
             }}
             importError={snapshot.settingsImportError}
+            backupStatus={backupStatus}
           />
         )}
 

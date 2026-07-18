@@ -7,6 +7,7 @@ import type { useSessions } from "../features/sessions/useSessions";
 import type { useFocusModes } from "../features/focus-modes/useFocusModes";
 import type { useFocusTimer } from "../features/focus-timer/useFocusTimer";
 import type { useAppSettings } from "../features/settings/useAppSettings";
+import { createBackupJson, parseBackupJson } from "../features/settings/backup";
 
 export type RuntimeControllerDeps = {
   player: ReturnType<typeof usePlayer>;
@@ -23,6 +24,7 @@ export type RuntimeControllerDeps = {
 function buildSnapshot(deps: RuntimeControllerDeps): RuntimeSnapshot {
   const { player, sessions, focusModes, focusTimer, appSettings, activeSessionId, shuffle, repeat } = deps;
   return {
+    input: player.input,
     queue: player.queue,
     currentIndex: player.currentIndex,
     currentTrack: player.currentTrack,
@@ -43,6 +45,27 @@ function buildSnapshot(deps: RuntimeControllerDeps): RuntimeSnapshot {
     settings: appSettings.settings,
     settingsImportError: appSettings.importError,
   };
+}
+
+function restoreBackup(json: string, deps: RuntimeControllerDeps): { ok: boolean; error?: string } {
+  const parsed = parseBackupJson(json);
+  if (!parsed.ok) return parsed;
+
+  const { backup } = parsed;
+  const { player, sessions, focusModes, focusTimer, appSettings } = deps;
+
+  player.stop();
+  appSettings.clearTaurusData();
+  appSettings.replaceSettings(backup.settings);
+  sessions.replaceSessions(backup.sessions);
+  focusModes.restoreModes(backup.focusModes.modes, backup.focusModes.activeModeId);
+  focusTimer.restoreSettings(backup.focusTimerSettings);
+  player.setInput(backup.player.input);
+  player.replaceQueue(backup.player.queue, backup.player.currentIndex);
+  player.setVolume(backup.player.volume);
+  player.setMuted(backup.player.muted);
+
+  return { ok: true };
 }
 
 function handleRuntimeCommand(command: RuntimeCommand, deps: RuntimeControllerDeps) {
@@ -130,13 +153,13 @@ function handleRuntimeCommand(command: RuntimeCommand, deps: RuntimeControllerDe
       appSettings.setPlayback(command.patch);
       break;
     case "settings.import":
-      appSettings.importData(command.json);
+      emitToOptions(RUNTIME_EVENTS.settingsImportResult, restoreBackup(command.json, deps)).catch(() => {});
       break;
     case "settings.reset":
       appSettings.resetAllData();
       break;
     case "settings.export-request":
-      emitToOptions(RUNTIME_EVENTS.settingsExport, { json: appSettings.exportData() }).catch(() => {});
+      emitToOptions(RUNTIME_EVENTS.settingsExport, { json: createBackupJson(buildSnapshot(deps)) }).catch(() => {});
       break;
     default:
       break;
@@ -148,6 +171,7 @@ export function useRuntimeController(deps: RuntimeControllerDeps) {
     () => buildSnapshot(deps),
     [
       deps.player.queue,
+      deps.player.input,
       deps.player.currentIndex,
       deps.player.currentTrack,
       deps.player.isPlaying,

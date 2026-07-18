@@ -171,6 +171,11 @@ export function useFocusModes({ sessions, setVolume, startSessionById }: UseFocu
     setModes((prev) => prev.filter((m) => m.id !== modeId));
   };
 
+  const restoreModes = (nextModes: FocusMode[], nextActiveModeId: string | null) => {
+    setModes(nextModes.map((mode) => ({ ...mode, tags: [...mode.tags] })));
+    setActiveModeId(nextActiveModeId ?? nextModes[0]?.id ?? "");
+  };
+
   return {
     modes,
     activeModeId,
@@ -179,5 +184,6 @@ export function useFocusModes({ sessions, setVolume, startSessionById }: UseFocu
     createMode,
     editMode,
     deleteMode,
+    restoreModes,
   };
 }

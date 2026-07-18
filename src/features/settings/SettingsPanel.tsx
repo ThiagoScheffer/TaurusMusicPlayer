@@ -16,10 +16,11 @@ interface SettingsPanelProps {
   setShortBreakMinutes: (minutes: number) => void;
   setLongBreakMinutes: (minutes: number) => void;
   setBreakBehavior: (behavior: "continue" | "pause" | "lowerVolume") => void;
-  exportData: () => string;
-  importData: (json: string) => { ok: boolean; error?: string };
+  exportBackup: () => void;
+  importBackup: () => void;
   resetAllData: () => boolean;
   importError: string | null;
+  backupStatus: string | null;
 }
 
 export function SettingsPanel(props: SettingsPanelProps) {
@@ -32,14 +33,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
     setShortBreakMinutes,
     setLongBreakMinutes,
     setBreakBehavior,
-    exportData,
-    importData,
+    exportBackup,
+    importBackup,
     resetAllData,
     importError,
+    backupStatus,
   } = props;
 
-  const [importText, setImportText] = useState("");
-  const [dataOutput, setDataOutput] = useState("");
   const [blacklistType, setBlacklistType] = useState<BlacklistEntryType>("video");
   const [blacklistValue, setBlacklistValue] = useState("");
 
@@ -124,10 +124,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       <div className="settings-section">
         <h4>Data</h4>
-        <button className="btn small" onClick={() => setDataOutput(exportData())}>Export JSON</button>
-        {dataOutput && <textarea className="settings-textarea" value={dataOutput} readOnly />}
-        <textarea className="settings-textarea" value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Paste exported JSON here" />
-        <button className="btn small" onClick={() => importData(importText)}>Import JSON</button>
+        <button className="btn small" onClick={exportBackup}>Export Backup...</button>
+        <button className="btn small" onClick={importBackup}>Import Backup...</button>
+        {backupStatus && <div className="queue-sub">{backupStatus}</div>}
         {importError && <div className="settings-error">Import error: {importError}</div>}
         <button className="btn small" onClick={resetAllData}>Reset All Data</button>
       </div>

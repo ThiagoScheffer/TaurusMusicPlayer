@@ -4,7 +4,7 @@ export type FocusTimerState = "idle" | "focus" | "shortBreak" | "longBreak" | "p
 type ActivePhase = "focus" | "shortBreak" | "longBreak";
 type BreakBehavior = "continue" | "pause" | "lowerVolume";
 
-interface FocusTimerSettings {
+export interface FocusTimerSettings {
   focusMinutes: number;
   shortBreakMinutes: number;
   longBreakMinutes: number;
@@ -224,6 +224,11 @@ export function useFocusTimer({ isPlaying, volume, play, pause, setVolume }: Use
     setSettings((prev) => ({ ...prev, longBreakMinutes: Math.max(1, minutes) }));
   };
 
+  const restoreSettings = (next: FocusTimerSettings) => {
+    setSettings({ ...next });
+    reset();
+  };
+
   return {
     state,
     remainingSeconds,
@@ -234,6 +239,7 @@ export function useFocusTimer({ isPlaying, volume, play, pause, setVolume }: Use
     setBreakBehavior: (breakBehavior: BreakBehavior) => setSettings((prev) => ({ ...prev, breakBehavior })),
     setBreakVolume: (breakVolume: number) =>
       setSettings((prev) => ({ ...prev, breakVolume: Math.min(100, Math.max(0, breakVolume)) })),
+    restoreSettings,
     start,
     pauseTimer,
     resume,

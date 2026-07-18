@@ -18,6 +18,7 @@ export interface AppEventPayloads {
   [RUNTIME_EVENTS.snapshot]: RuntimeSnapshot;
   [RUNTIME_EVENTS.command]: RuntimeCommand;
   [RUNTIME_EVENTS.settingsExport]: { json: string };
+  [RUNTIME_EVENTS.settingsImportResult]: { ok: boolean; error?: string };
   [EXTERNAL_AUDIO_EVENTS.state]: ExternalAudioStatePayload;
 }
 

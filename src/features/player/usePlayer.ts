@@ -702,6 +702,7 @@ export function usePlayer(config: UsePlayerConfig) {
     volume,
     setVolume,
     muted,
+    setMuted,
     toggleMuted,
     duration,
     current,

@@ -15,6 +15,7 @@ export interface FocusTimerSnapshot {
 }
 
 export interface RuntimeSnapshot {
+  input: string;
   queue: Track[];
   currentIndex: number;
   currentTrack: Track | null;

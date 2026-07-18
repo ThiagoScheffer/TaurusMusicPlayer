@@ -119,6 +119,12 @@ Runs TypeScript project builds and creates the Vite output in `dist/`.
 npm run lint
 ```
 
+### Frontend tests
+
+```powershell
+npm test
+```
+
 ### Rust compile check
 
 ```powershell
@@ -148,6 +154,7 @@ Pop-Location
 
 ```powershell
 npm run lint
+npm test
 npm run build
 
 Push-Location src-tauri
@@ -200,6 +207,7 @@ src-tauri\target\release\bundle\
 ```powershell
 npm ci
 npm run lint
+npm test
 npm run build
 
 Push-Location src-tauri
@@ -222,6 +230,7 @@ Install the generated installer on a test Windows account before distribution. C
 | Start browser frontend | `npm run dev` |
 | Build frontend | `npm run build` |
 | Lint frontend | `npm run lint` |
+| Run frontend tests | `npm test` |
 | Preview frontend bundle | `npm run preview` |
 | Run desktop app in development | `npm run tauri -- dev` |
 | Create desktop release bundle | `npm run tauri -- build` |
