@@ -198,8 +198,17 @@ export function PlayerView() {
           </div>
 
           <div className="current-track">
-            Current: {player.currentTrack ? player.currentTrack.title || player.currentTrack.videoId : "No track selected"}
-          </div>
+            {/* fixed long name breaking ui */}
+          <span>Current: </span>
+          <span
+            className="track-name"
+            title={player.currentTrack?.title || player.currentTrack?.videoId}
+          >
+            {player.currentTrack
+              ? player.currentTrack.title || player.currentTrack.videoId
+              : "No track selected"}
+          </span>
+        </div>
           <div className="queue-sub">Queue: {player.queue.length} · Timer: {focusTimer.state} {formatTime(focusTimer.remainingSeconds)}</div>
         </div>
 

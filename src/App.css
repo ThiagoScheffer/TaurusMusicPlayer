@@ -130,7 +130,21 @@
 .seek { margin-top: 8px; }
 .seek input[type="range"] { width: 100%; }
 
-.current-track { margin-top: 6px; color: rgba(217, 255, 231, 0.85); font-size: 12px; }
+.current-track {
+  display: flex;
+  color: rgba(217, 255, 231, 0.65);
+  font-size: 14px;
+  gap: 4px;
+  align-items: center;
+}
+
+.track-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .queue-sub {
   margin-top: 4px;
   color: rgba(217, 255, 231, 0.65);
