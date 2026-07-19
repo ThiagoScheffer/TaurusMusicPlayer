@@ -29,8 +29,8 @@ Taurus Music Player is a compact Tauri v2 desktop player for coding and study. I
 | Rust | Rust 1.77.2+ compatible stable toolchain | `rustc --version` |
 | MSVC Build Tools | Tauri Windows builds | Install Visual Studio Build Tools with **Desktop development with C++** |
 | WebView2 Runtime | Tauri Windows runtime | Usually installed on Windows 10/11 |
-| mpv | Audio-only desktop playback | `mpv --version` |
-| yt-dlp | YouTube audio resolution | `yt-dlp --version` |
+| mpv | Audio-only desktop playback during source development | `mpv --version` |
+| yt-dlp | YouTube audio resolution during source development | `yt-dlp --version` |
 
 Install the Rust formatter once if it is missing:
 
@@ -54,7 +54,7 @@ C:\Tools\yt-dlp\yt-dlp.exe
 C:\Program Files\yt-dlp\yt-dlp.exe
 ```
 
-`mpv` and `yt-dlp` are required for Tauri audio-only playback. Browser-only Vite development uses the YouTube embed fallback and does not require them.
+Release installers bundle pinned Windows x64 copies of `mpv` and `yt-dlp`, so end users do not need to install either tool separately. The source checkout retains PATH and explicit-location discovery as a development and troubleshooting fallback. Browser-only Vite development uses the YouTube embed fallback and does not require them.
 
 ## First-time setup
 
@@ -220,7 +220,21 @@ Pop-Location
 npm run tauri -- build
 ```
 
-Install the generated installer on a test Windows account before distribution. Confirm that `mpv` and `yt-dlp` are available through `PATH` or one of the supported locations above.
+Install the generated installer on a clean Windows account before distribution. Confirm audio playback works with no `mpv` or `yt-dlp` installed in `PATH`; the installer includes its own portable Windows x64 tools.
+
+### Bundled playback tool maintenance
+
+The release installer packages `src-tauri/resources/playback-tools/` as Tauri resources. It contains the complete portable mpv runtime, `yt-dlp.exe`, source/license notices, and a checksum manifest.
+
+To update the bundled tools for a future release:
+
+1. Download one pinned Windows x64 mpv portable archive and the matching official `yt-dlp.exe` release.
+2. Verify the downloaded SHA-256 values before replacing the corresponding files under `src-tauri/resources/playback-tools/windows-x64/`.
+3. Update `src-tauri/resources/playback-tools/manifest.json` and `THIRD_PARTY_NOTICES.md` with the exact version, URL, and checksums.
+4. Preserve all mpv files adjacent to `mpv.exe`; mpv needs its portable runtime files at launch.
+5. Run the complete pre-release validation, build both installer formats, and test them on a Windows machine without external mpv or yt-dlp installations.
+
+Do not use `yt-dlp -U` from the installed app. Ship yt-dlp updates with a verified Taurus release so the bundled manifest stays accurate.
 
 ## Command reference
 

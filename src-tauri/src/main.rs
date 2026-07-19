@@ -136,6 +136,9 @@ mod tests {
         .expect("valid cli");
 
         assert!(cli.audio_only);
-        assert_eq!(cli.url.as_deref(), Some("https://youtube.com/playlist?list=test"));
+        assert_eq!(
+            cli.url.as_deref(),
+            Some("https://youtube.com/playlist?list=test")
+        );
     }
 }

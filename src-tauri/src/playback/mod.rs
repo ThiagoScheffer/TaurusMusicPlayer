@@ -16,10 +16,21 @@ const YT_DLP_CANDIDATES: &[&str] = &[
     r"C:\Tools\yt-dlp\yt-dlp.exe",
     r"C:\Program Files\yt-dlp\yt-dlp.exe",
 ];
+const BUNDLED_TOOLS_DIR: &str = "playback-tools/windows-x64";
+const BUNDLED_MPV_DIR: &str = "mpv";
+const BUNDLED_MPV_EXE: &str = "mpv.exe";
+const BUNDLED_YT_DLP_EXE: &str = "yt-dlp.exe";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlaybackTools {
+    mpv_binary: PathBuf,
+    tools_dir: PathBuf,
+}
 
 #[derive(Debug)]
 pub enum PlaybackError {
     EmptyUrl,
+    InvalidBundledTools { resource_dir: PathBuf },
     MissingDependency { binary: &'static str },
     SpawnFailed(std::io::Error),
 }
@@ -28,10 +39,15 @@ impl fmt::Display for PlaybackError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyUrl => write!(f, "A YouTube URL is required. Pass --url <URL>."),
+            Self::InvalidBundledTools { resource_dir } => write!(
+                f,
+                "Bundled playback tools are incomplete in '{}'. Reinstall Taurus Music Player.",
+                resource_dir.display()
+            ),
             Self::MissingDependency { binary } => write!(
                 f,
-                "Missing dependency: '{}' was not found in PATH. Install '{}' and try again.",
-                binary, binary
+                "Missing playback dependency: bundled '{}' was unavailable and it was not found in PATH.",
+                binary
             ),
             Self::SpawnFailed(error) => write!(f, "Failed to start mpv: {error}"),
         }
@@ -62,12 +78,28 @@ pub fn mpv_audio_args_with_ipc(url: &str, ipc_path: Option<&str>) -> Vec<OsStrin
 }
 
 pub fn build_mpv_audio_command(mpv_binary: &Path, url: &str, ipc_path: Option<&str>) -> Command {
+    build_mpv_audio_command_with_tools(mpv_binary, url, ipc_path, None)
+}
+
+fn build_mpv_audio_command_with_tools(
+    mpv_binary: &Path,
+    url: &str,
+    ipc_path: Option<&str>,
+    tools_dir: Option<&Path>,
+) -> Command {
     let mut command = Command::new(mpv_binary);
     command
         .args(mpv_audio_args_with_ipc(url, ipc_path))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+
+    if let Some(tools_dir) = tools_dir {
+        // mpv loads its DLLs and runs yt-dlp from this portable, bundled directory.
+        command.current_dir(tools_dir);
+        command.env("PATH", prepend_to_path(tools_dir, env::var_os("PATH")));
+    }
+
     command
 }
 
@@ -77,26 +109,77 @@ pub fn play_youtube_audio(url: &str) -> Result<Child, PlaybackError> {
         return Err(PlaybackError::EmptyUrl);
     }
 
-    let mpv_binary = resolve_mpv_binary()?;
-    ensure_yt_dlp_binary()?;
+    let tools = resolve_playback_tools(None)?;
 
-    build_mpv_audio_command(&mpv_binary, trimmed, None)
+    build_mpv_audio_command_with_tools(&tools.mpv_binary, trimmed, None, Some(&tools.tools_dir))
         .spawn()
         .map_err(PlaybackError::SpawnFailed)
 }
 
 pub fn play_youtube_audio_with_ipc(url: &str, ipc_path: &str) -> Result<Child, PlaybackError> {
+    play_youtube_audio_with_ipc_from_resources(url, ipc_path, None)
+}
+
+pub fn play_youtube_audio_with_ipc_from_resources(
+    url: &str,
+    ipc_path: &str,
+    resource_dir: Option<&Path>,
+) -> Result<Child, PlaybackError> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return Err(PlaybackError::EmptyUrl);
     }
 
+    let tools = resolve_playback_tools(resource_dir)?;
+
+    build_mpv_audio_command_with_tools(
+        &tools.mpv_binary,
+        trimmed,
+        Some(ipc_path),
+        Some(&tools.tools_dir),
+    )
+    .spawn()
+    .map_err(PlaybackError::SpawnFailed)
+}
+
+fn resolve_playback_tools(resource_dir: Option<&Path>) -> Result<PlaybackTools, PlaybackError> {
+    if let Some(resource_dir) = resource_dir {
+        match bundled_playback_tools(resource_dir)? {
+            Some(tools) => return Ok(tools),
+            None => {}
+        }
+    }
+
     let mpv_binary = resolve_mpv_binary()?;
     ensure_yt_dlp_binary()?;
+    let tools_dir = mpv_binary
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    Ok(PlaybackTools {
+        mpv_binary,
+        tools_dir,
+    })
+}
 
-    build_mpv_audio_command(&mpv_binary, trimmed, Some(ipc_path))
-        .spawn()
-        .map_err(PlaybackError::SpawnFailed)
+fn bundled_playback_tools(resource_dir: &Path) -> Result<Option<PlaybackTools>, PlaybackError> {
+    let tools_dir = resource_dir.join(BUNDLED_TOOLS_DIR);
+    if !tools_dir.exists() {
+        return Ok(None);
+    }
+
+    let mpv_binary = tools_dir.join(BUNDLED_MPV_DIR).join(BUNDLED_MPV_EXE);
+    let yt_dlp_binary = tools_dir.join(BUNDLED_YT_DLP_EXE);
+    if !mpv_binary.is_file() || !yt_dlp_binary.is_file() {
+        return Err(PlaybackError::InvalidBundledTools {
+            resource_dir: tools_dir,
+        });
+    }
+
+    Ok(Some(PlaybackTools {
+        mpv_binary,
+        tools_dir,
+    }))
 }
 
 fn resolve_mpv_binary() -> Result<PathBuf, PlaybackError> {
@@ -129,10 +212,19 @@ fn resolve_binary_candidate(binary: &str, path_var: Option<OsString>) -> Option<
         .find(|p| p.is_file())
 }
 
+fn prepend_to_path(directory: &Path, current_path: Option<OsString>) -> OsString {
+    let mut entries = vec![directory.to_path_buf()];
+    if let Some(current_path) = current_path {
+        entries.extend(env::split_paths(&current_path));
+    }
+    env::join_paths(entries).unwrap_or_else(|_| directory.as_os_str().to_os_string())
+}
+
 fn candidate_paths(dir: &Path, binary: &str) -> Vec<PathBuf> {
     #[cfg(windows)]
     {
-        let pathext = env::var_os("PATHEXT").unwrap_or_else(|| OsString::from(".COM;.EXE;.BAT;.CMD"));
+        let pathext =
+            env::var_os("PATHEXT").unwrap_or_else(|| OsString::from(".COM;.EXE;.BAT;.CMD"));
         let extensions = pathext
             .to_string_lossy()
             .split(';')
@@ -146,7 +238,11 @@ fn candidate_paths(dir: &Path, binary: &str) -> Vec<PathBuf> {
         }
 
         let mut paths = vec![dir.join(binary)];
-        paths.extend(extensions.into_iter().map(|ext| dir.join(format!("{binary}.{ext}"))));
+        paths.extend(
+            extensions
+                .into_iter()
+                .map(|ext| dir.join(format!("{binary}.{ext}"))),
+        );
         paths
     }
 
@@ -159,6 +255,19 @@ fn candidate_paths(dir: &Path, binary: &str) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_resource_dir() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "taurus-playback-test-{}-{unique}",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn builds_audio_only_mpv_args() {
@@ -183,7 +292,8 @@ mod tests {
 
     #[test]
     fn builds_audio_only_mpv_command_with_resolved_binary() {
-        let command = build_mpv_audio_command(Path::new("mpv"), "https://youtube.com/watch?v=test", None);
+        let command =
+            build_mpv_audio_command(Path::new("mpv"), "https://youtube.com/watch?v=test", None);
         let args = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -205,7 +315,10 @@ mod tests {
 
     #[test]
     fn builds_audio_only_mpv_args_with_ipc() {
-        let args = mpv_audio_args_with_ipc("https://youtube.com/watch?v=test", Some(r"\\.\pipe\taurus-test"));
+        let args = mpv_audio_args_with_ipc(
+            "https://youtube.com/watch?v=test",
+            Some(r"\\.\pipe\taurus-test"),
+        );
         let text = args
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -234,5 +347,53 @@ mod tests {
     fn empty_url_returns_actionable_error() {
         let error = play_youtube_audio(" ").unwrap_err();
         assert!(matches!(error, PlaybackError::EmptyUrl));
+    }
+
+    #[test]
+    fn bundled_tools_take_precedence_over_external_candidates() {
+        let resource_dir = temporary_resource_dir();
+        let tools_dir = resource_dir.join(BUNDLED_TOOLS_DIR);
+        let mpv_dir = tools_dir.join(BUNDLED_MPV_DIR);
+        fs::create_dir_all(&mpv_dir).unwrap();
+        fs::write(mpv_dir.join(BUNDLED_MPV_EXE), []).unwrap();
+        fs::write(tools_dir.join(BUNDLED_YT_DLP_EXE), []).unwrap();
+
+        let tools = resolve_playback_tools(Some(&resource_dir)).unwrap();
+        assert_eq!(tools.mpv_binary, mpv_dir.join(BUNDLED_MPV_EXE));
+        assert_eq!(tools.tools_dir, tools_dir);
+
+        fs::remove_dir_all(resource_dir).unwrap();
+    }
+
+    #[test]
+    fn incomplete_bundled_tools_fail_with_reinstall_guidance() {
+        let resource_dir = temporary_resource_dir();
+        let tools_dir = resource_dir.join(BUNDLED_TOOLS_DIR);
+        fs::create_dir_all(&tools_dir).unwrap();
+
+        let error = resolve_playback_tools(Some(&resource_dir)).unwrap_err();
+        assert!(matches!(error, PlaybackError::InvalidBundledTools { .. }));
+
+        fs::remove_dir_all(resource_dir).unwrap();
+    }
+
+    #[test]
+    fn bundled_command_sets_working_directory_and_path() {
+        let tools_dir = PathBuf::from(r"C:\\Taurus\\playback-tools\\windows-x64");
+        let command = build_mpv_audio_command_with_tools(
+            &tools_dir.join(BUNDLED_MPV_DIR).join(BUNDLED_MPV_EXE),
+            "https://youtube.com/watch?v=test",
+            None,
+            Some(&tools_dir),
+        );
+
+        assert_eq!(command.get_current_dir(), Some(tools_dir.as_path()));
+        let path = command
+            .get_envs()
+            .find_map(|(key, value)| (key == "PATH").then_some(value).flatten())
+            .expect("bundled command should set PATH");
+        assert!(path
+            .to_string_lossy()
+            .starts_with(tools_dir.to_string_lossy().as_ref()));
     }
 }

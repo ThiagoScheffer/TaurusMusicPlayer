@@ -1,5 +1,5 @@
-﻿//! Taurus Music Player - Rust Backend
-//! 
+//! Taurus Music Player - Rust Backend
+//!
 //! This module provides the core Tauri application functionality for the music player,
 //! including tray icon management, global shortcuts, and window behavior.
 
@@ -77,17 +77,24 @@ fn emit_player_control(app: &AppHandle, event: &str, label: &str) {
 #[tauri::command]
 fn set_tray_tooltip(app: AppHandle, current_track: Option<String>) -> Result<(), String> {
     let tooltip = match current_track {
-        Some(track) if !track.trim().is_empty() => format!("{}\nNow Playing: {}", APP_NAME, track.trim()),
+        Some(track) if !track.trim().is_empty() => {
+            format!("{}\nNow Playing: {}", APP_NAME, track.trim())
+        }
         _ => APP_NAME.to_string(),
     };
 
-    let tray = app.tray_by_id(TRAY_ID).ok_or_else(|| "Tray not found".to_string())?;
+    let tray = app
+        .tray_by_id(TRAY_ID)
+        .ok_or_else(|| "Tray not found".to_string())?;
     tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())
 }
 
 fn kill_audio_child(child: &mut Child) {
     if let Err(error) = child.kill() {
-        log::debug!("mpv process was already stopped or could not be killed: {}", error);
+        log::debug!(
+            "mpv process was already stopped or could not be killed: {}",
+            error
+        );
     }
     if let Err(error) = child.wait() {
         log::debug!("Failed to wait for mpv process shutdown: {}", error);
@@ -133,7 +140,11 @@ fn request_json_from_mpv_ipc(path: &str, payload: Value) -> Result<Value, String
     let mut pipe = {
         let mut opened = None;
         for _ in 0..40 {
-            match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+            {
                 Ok(pipe) => {
                     opened = Some(pipe);
                     break;
@@ -156,7 +167,8 @@ fn request_json_from_mpv_ipc(path: &str, payload: Value) -> Result<Value, String
             }
         }
     };
-    writeln!(pipe, "{payload}").map_err(|error| format!("Failed to write mpv IPC command: {error}"))?;
+    writeln!(pipe, "{payload}")
+        .map_err(|error| format!("Failed to write mpv IPC command: {error}"))?;
     pipe.flush()
         .map_err(|error| format!("Failed to flush mpv IPC command: {error}"))?;
 
@@ -165,15 +177,18 @@ fn request_json_from_mpv_ipc(path: &str, payload: Value) -> Result<Value, String
     reader
         .read_line(&mut line)
         .map_err(|error| format!("Failed to read mpv IPC response: {error}"))?;
-    serde_json::from_str(&line).map_err(|error| format!("Failed to parse mpv IPC response: {error}"))
+    serde_json::from_str(&line)
+        .map_err(|error| format!("Failed to parse mpv IPC response: {error}"))
 }
 
 #[cfg(not(windows))]
 fn request_json_from_mpv_ipc(path: &str, payload: Value) -> Result<Value, String> {
     use std::os::unix::net::UnixStream;
 
-    let mut socket = UnixStream::connect(path).map_err(|error| format!("Failed to open mpv IPC socket: {error}"))?;
-    writeln!(socket, "{payload}").map_err(|error| format!("Failed to write mpv IPC command: {error}"))?;
+    let mut socket = UnixStream::connect(path)
+        .map_err(|error| format!("Failed to open mpv IPC socket: {error}"))?;
+    writeln!(socket, "{payload}")
+        .map_err(|error| format!("Failed to write mpv IPC command: {error}"))?;
     socket
         .flush()
         .map_err(|error| format!("Failed to flush mpv IPC command: {error}"))?;
@@ -183,10 +198,14 @@ fn request_json_from_mpv_ipc(path: &str, payload: Value) -> Result<Value, String
     reader
         .read_line(&mut line)
         .map_err(|error| format!("Failed to read mpv IPC response: {error}"))?;
-    serde_json::from_str(&line).map_err(|error| format!("Failed to parse mpv IPC response: {error}"))
+    serde_json::from_str(&line)
+        .map_err(|error| format!("Failed to parse mpv IPC response: {error}"))
 }
 
-fn send_mpv_command(process: &ExternalAudioProcess, command: serde_json::Value) -> Result<(), String> {
+fn send_mpv_command(
+    process: &ExternalAudioProcess,
+    command: serde_json::Value,
+) -> Result<(), String> {
     let response = request_json_from_mpv_ipc(&process.ipc_path, json!({ "command": command }))?;
     match response.get("error").and_then(Value::as_str) {
         Some("success") | None => Ok(()),
@@ -195,7 +214,8 @@ fn send_mpv_command(process: &ExternalAudioProcess, command: serde_json::Value) 
 }
 
 fn read_mpv_property(ipc_path: &str, property: &str) -> Result<Value, String> {
-    let response = request_json_from_mpv_ipc(ipc_path, json!({ "command": ["get_property", property] }))?;
+    let response =
+        request_json_from_mpv_ipc(ipc_path, json!({ "command": ["get_property", property] }))?;
     match response.get("error").and_then(Value::as_str) {
         Some("success") | None => Ok(response.get("data").cloned().unwrap_or(Value::Null)),
         Some(error) => Err(format!("mpv get_property {property} failed: {error}")),
@@ -203,11 +223,15 @@ fn read_mpv_property(ipc_path: &str, property: &str) -> Result<Value, String> {
 }
 
 fn read_mpv_f64(ipc_path: &str, property: &str) -> Option<f64> {
-    read_mpv_property(ipc_path, property).ok().and_then(|value| value.as_f64())
+    read_mpv_property(ipc_path, property)
+        .ok()
+        .and_then(|value| value.as_f64())
 }
 
 fn read_mpv_bool(ipc_path: &str, property: &str) -> Option<bool> {
-    read_mpv_property(ipc_path, property).ok().and_then(|value| value.as_bool())
+    read_mpv_property(ipc_path, property)
+        .ok()
+        .and_then(|value| value.as_bool())
 }
 
 fn emit_external_audio_state(app: &AppHandle, snapshot: ExternalAudioSnapshot) {
@@ -298,13 +322,16 @@ fn play_external_audio(
 
     let ipc_path = next_ipc_path(&state);
     cleanup_ipc_path(&ipc_path);
-    let child = playback::play_youtube_audio_with_ipc(&url, &ipc_path).map_err(|error| error.to_string())?;
+    let resource_dir = app.path().resource_dir().ok();
+    let child = playback::play_youtube_audio_with_ipc_from_resources(
+        &url,
+        &ipc_path,
+        resource_dir.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
     let track_id = track_id.unwrap_or_else(|| url.clone());
     spawn_external_audio_poller(app, track_id.clone(), ipc_path.clone());
-    *guard = Some(ExternalAudioProcess {
-        child,
-        ipc_path,
-    });
+    *guard = Some(ExternalAudioProcess { child, ipc_path });
     Ok(())
 }
 
@@ -345,7 +372,10 @@ fn stop_external_audio(state: State<'_, ExternalAudioState>) -> Result<(), Strin
 }
 
 #[tauri::command]
-fn set_external_audio_volume(state: State<'_, ExternalAudioState>, volume: u8) -> Result<(), String> {
+fn set_external_audio_volume(
+    state: State<'_, ExternalAudioState>,
+    volume: u8,
+) -> Result<(), String> {
     let volume = volume.min(100);
     let guard = state
         .process
@@ -358,7 +388,10 @@ fn set_external_audio_volume(state: State<'_, ExternalAudioState>, volume: u8) -
 }
 
 #[tauri::command]
-fn set_external_audio_muted(state: State<'_, ExternalAudioState>, muted: bool) -> Result<(), String> {
+fn set_external_audio_muted(
+    state: State<'_, ExternalAudioState>,
+    muted: bool,
+) -> Result<(), String> {
     let guard = state
         .process
         .lock()
@@ -383,7 +416,6 @@ fn seek_external_audio(state: State<'_, ExternalAudioState>, seconds: f64) -> Re
 }
 
 pub fn run() {
-    
     let state = Arc::new(AppState::default());
     let state_for_setup = state.clone();
     let state_for_window = state.clone();
@@ -412,36 +444,51 @@ pub fn run() {
         .setup(move |app| {
             let state_clone = state_for_setup.clone();
 
-            if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+P", move |app, _, _| {
-                emit_player_control(app, EVENT_PLAY_PAUSE, "play/pause shortcut");
-            }) {
+            if let Err(e) = app
+                .global_shortcut()
+                .on_shortcut("Ctrl+Alt+P", move |app, _, _| {
+                    emit_player_control(app, EVENT_PLAY_PAUSE, "play/pause shortcut");
+                })
+            {
                 log::error!("Failed to register Ctrl+Alt+P global shortcut: {}", e);
                 return Err(Box::new(e));
             }
-            if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+N", move |app, _, _| {
-                emit_player_control(app, EVENT_NEXT_TRACK, "next-track shortcut");
-            }) {
+            if let Err(e) = app
+                .global_shortcut()
+                .on_shortcut("Ctrl+Alt+N", move |app, _, _| {
+                    emit_player_control(app, EVENT_NEXT_TRACK, "next-track shortcut");
+                })
+            {
                 log::error!("Failed to register Ctrl+Alt+N global shortcut: {}", e);
                 return Err(Box::new(e));
             }
-            if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+B", move |app, _, _| {
-                emit_player_control(app, EVENT_PREVIOUS_TRACK, "previous-track shortcut");
-            }) {
+            if let Err(e) = app
+                .global_shortcut()
+                .on_shortcut("Ctrl+Alt+B", move |app, _, _| {
+                    emit_player_control(app, EVENT_PREVIOUS_TRACK, "previous-track shortcut");
+                })
+            {
                 log::error!("Failed to register Ctrl+Alt+B global shortcut: {}", e);
                 return Err(Box::new(e));
             }
-            if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+M", move |app, _, _| {
-                emit_player_control(app, EVENT_TOGGLE_MUTE, "toggle-mute shortcut");
-            }) {
+            if let Err(e) = app
+                .global_shortcut()
+                .on_shortcut("Ctrl+Alt+M", move |app, _, _| {
+                    emit_player_control(app, EVENT_TOGGLE_MUTE, "toggle-mute shortcut");
+                })
+            {
                 log::error!("Failed to register Ctrl+Alt+M global shortcut: {}", e);
                 return Err(Box::new(e));
             }
 
-            let show_hide_item = MenuItem::with_id(app, "show_hide", "Show / Hide", true, None::<&str>)?;
-            let play_pause_item = MenuItem::with_id(app, "play_pause", "Play / Pause", true, None::<&str>)?;
+            let show_hide_item =
+                MenuItem::with_id(app, "show_hide", "Show / Hide", true, None::<&str>)?;
+            let play_pause_item =
+                MenuItem::with_id(app, "play_pause", "Play / Pause", true, None::<&str>)?;
             let stop_item = MenuItem::with_id(app, "stop_track", "Stop", true, None::<&str>)?;
             let next_item = MenuItem::with_id(app, "next_track", "Next Track", true, None::<&str>)?;
-            let prev_item = MenuItem::with_id(app, "previous_track", "Previous Track", true, None::<&str>)?;
+            let prev_item =
+                MenuItem::with_id(app, "previous_track", "Previous Track", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
             let menu = Menu::with_items(
@@ -508,7 +555,9 @@ pub fn run() {
                                             log::error!("Failed to focus window: {}", e);
                                         }
                                     }
-                                    Err(e) => log::error!("Failed to query window visibility: {}", e),
+                                    Err(e) => {
+                                        log::error!("Failed to query window visibility: {}", e)
+                                    }
                                 }
                             }
                         }
@@ -542,7 +591,11 @@ pub fn run() {
                     } else if event.id() == &next_id {
                         emit_player_control(app_handle, TRAY_EVENT_NEXT_TRACK, "tray next-track");
                     } else if event.id() == &prev_id {
-                        emit_player_control(app_handle, TRAY_EVENT_PREVIOUS_TRACK, "tray previous-track");
+                        emit_player_control(
+                            app_handle,
+                            TRAY_EVENT_PREVIOUS_TRACK,
+                            "tray previous-track",
+                        );
                     } else if event.id() == &quit_id {
                         let state = app_handle.state::<ExternalAudioState>();
                         if let Ok(mut guard) = state.process.lock() {
