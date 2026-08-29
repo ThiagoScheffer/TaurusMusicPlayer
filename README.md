@@ -250,6 +250,30 @@ The exact output folders depend on the installed packaging tools and target plat
 src-tauri\target\release\bundle\
 ```
 
+### Automatic GitHub releases
+
+Every commit pushed to `main` starts
+`.github/workflows/release.yml`. The Windows workflow:
+
+1. Skips the run when the commit already has a semantic release tag.
+2. Uses the configured application version for the first release, then increments
+   the patch component of the latest `vX.Y.Z` tag.
+3. Runs frontend and Rust tests and verifies Rust formatting.
+4. Refreshes and verifies the current stable bundled mpv and yt-dlp tools.
+5. Builds the Windows x64 NSIS installer.
+6. Publishes a non-draft GitHub Release with generated release notes, the
+   installer, and `SHA256SUMS.txt`.
+
+The workflow is serialized so two closely spaced commits cannot choose the same
+version. It requires the repository's Actions setting for `GITHUB_TOKEN` to
+permit **Read and write permissions**; the workflow itself requests only
+`contents: write`. A manual run is also available through **Actions → Build and
+publish release → Run workflow**.
+
+Version synchronization happens only in the temporary Actions checkout. Release
+tags are the source of truth for subsequent automatic patch increments; the
+workflow does not create a version-bump commit on `main`.
+
 ### Recommended release sequence
 
 ```powershell

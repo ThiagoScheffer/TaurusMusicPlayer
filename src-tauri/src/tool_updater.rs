@@ -1,5 +1,7 @@
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{ACCEPT, ETAG, IF_NONE_MATCH, USER_AGENT};
+use reqwest::header::{
+    HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, ETAG, IF_NONE_MATCH, USER_AGENT,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -313,10 +315,18 @@ fn update_all(app: Option<&AppHandle>, root: &Path) -> Result<(), String> {
     let mut manifest = read_manifest(root).unwrap_or_default();
     repair_or_rollback(root, &mut manifest, ToolKind::Mpv)?;
     repair_or_rollback(root, &mut manifest, ToolKind::YtDlp)?;
+    let mut default_headers = HeaderMap::new();
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        if let Ok(mut authorization) = HeaderValue::from_str(&format!("Bearer {token}")) {
+            authorization.set_sensitive(true);
+            default_headers.insert(AUTHORIZATION, authorization);
+        }
+    }
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(90))
         .redirect(reqwest::redirect::Policy::limited(5))
+        .default_headers(default_headers)
         .build()
         .map_err(|error| format!("Cannot create update client: {error}"))?;
     let mut changed = false;
