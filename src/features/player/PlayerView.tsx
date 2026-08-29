@@ -174,9 +174,14 @@ export function PlayerView() {
               <span className="sep">/</span>
               <span>{durationLabel}</span>
             </div>
-            <div className="pill">
+            <div
+              className={`pill ${player.playbackError ? "error" : ""}`}
+              title={player.playbackError ?? undefined}
+            >
               <span className={`dot ${player.isPlaying ? "on" : ""}`} />
-              <span>{player.isPlaying ? "PLAY" : "STOP"}</span>
+              <span>
+                {player.playbackError ? "ERROR" : player.externalAudioLoading ? "LOAD" : player.isPlaying ? "PLAY" : "STOP"}
+              </span>
             </div>
           </div>
 

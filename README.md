@@ -9,9 +9,47 @@ Taurus Music Player is a compact Tauri v2 desktop player for coding and study. I
 - React 19, TypeScript, Vite, and `react-youtube`
 - Tauri v2 desktop shell and Rust 2021 backend
 - Audio-only desktop playback through `mpv` and `yt-dlp`
+- Background updates for the playback tools with verified offline fallbacks
 - Browser-only Vite fallback through the YouTube embed player
 - Queue, sessions/playlists, focus timer, focus modes, blacklist, and local settings
 - System tray controls, hide-to-tray behavior, and global shortcuts
+
+## Latest fixes and improvements
+
+### Restored and observable external playback
+
+- `mpv` diagnostics are captured instead of being discarded.
+- Playback reports extraction failures, unavailable media, codec/runtime errors,
+  audio-device failures, and unexpected `mpv` exits to the player UI.
+- The external-audio poller now tracks loading, playing, paused, idle, ended, and
+  failed states, including media title and selected audio device when available.
+- Initial volume and mute settings are applied when playback starts.
+- `mpv` runs with `--no-config`, preventing an incompatible user configuration
+  from silently changing Taurus playback.
+- Browser-only development retains the YouTube iframe fallback.
+
+### Self-updating playback tools
+
+- Taurus checks for stable `mpv` and `yt-dlp` releases in a background thread on
+  every desktop launch, without blocking startup or current playback.
+- Automatic updates use only the allowlisted `yt-dlp/yt-dlp` and
+  `zhongfly/mpv-winbuild` GitHub repositories.
+- ETags are persisted so unchanged releases return `304 Not Modified` without
+  downloading the binaries again.
+- Downloads have time and size limits and must match GitHub's SHA-256 digest.
+- mpv archives are extracted with pinned `sevenz-rust2 0.21.5`; candidates must
+  pass an executable `--version` check before activation.
+- Updates are stored under the writable local application-data directory. Taurus
+  never modifies installed files under Program Files.
+- Version directories are retained as immutable active/previous installations.
+  A failed or corrupted active version rolls back to the previous verified copy.
+- Playback resolves each tool independently in this order: verified managed
+  version, bundled offline fallback, then an existing PATH installation.
+- **Options → Settings → Playback Tools** shows installed/latest versions,
+  source, update phase, and failures, with a manual **Check now** action.
+
+The currently bundled Windows x64 fallbacks are mpv
+`2026-08-28-e8673660ab` and yt-dlp `2026.08.19`.
 
 ### Desktop shortcuts
 
@@ -26,11 +64,11 @@ Taurus Music Player is a compact Tauri v2 desktop player for coding and study. I
 | --- | --- | --- |
 | Node.js | Frontend/tooling; current LTS recommended | `node --version` |
 | npm | Installed with Node.js | `npm --version` |
-| Rust | Rust 1.77.2+ compatible stable toolchain | `rustc --version` |
+| Rust | Rust 1.93+ stable toolchain | `rustc --version` |
 | MSVC Build Tools | Tauri Windows builds | Install Visual Studio Build Tools with **Desktop development with C++** |
 | WebView2 Runtime | Tauri Windows runtime | Usually installed on Windows 10/11 |
-| mpv | Audio-only desktop playback during source development | `mpv --version` |
-| yt-dlp | YouTube audio resolution during source development | `yt-dlp --version` |
+| mpv | Optional PATH fallback for CLI/source troubleshooting | `mpv --version` |
+| yt-dlp | Optional PATH fallback for CLI/source troubleshooting | `yt-dlp --version` |
 
 Install the Rust formatter once if it is missing:
 
@@ -38,9 +76,11 @@ Install the Rust formatter once if it is missing:
 rustup component add rustfmt
 ```
 
-### mpv and yt-dlp locations
+### mpv and yt-dlp resolution
 
-The app first searches `PATH`, then also checks these Windows locations:
+The desktop app first uses a verified version in its local application-data
+directory, then its bundled Windows x64 fallback, and finally PATH or the
+following legacy troubleshooting locations:
 
 ```text
 mpv
@@ -54,7 +94,11 @@ C:\Tools\yt-dlp\yt-dlp.exe
 C:\Program Files\yt-dlp\yt-dlp.exe
 ```
 
-Release installers bundle pinned Windows x64 copies of `mpv` and `yt-dlp`, so end users do not need to install either tool separately. The source checkout retains PATH and explicit-location discovery as a development and troubleshooting fallback. Browser-only Vite development uses the YouTube embed fallback and does not require them.
+Release installers bundle pinned, verified Windows x64 copies of `mpv` and
+`yt-dlp`, so end users do not need to install either tool separately. Automatic
+updates are stored per user and the bundled copies remain available for offline
+startup and recovery. Browser-only Vite development uses the YouTube embed
+fallback and does not require either executable.
 
 ## First-time setup
 
@@ -173,6 +217,10 @@ npm run tauri -- dev
 
 Verify that you can add a YouTube URL, play/pause/stop, move through the queue, change volume/mute, seek, control playback through the tray, use global shortcuts while unfocused, and hide/quit through the tray.
 
+Also open **Options → Settings → Playback Tools**, verify both bundled or managed
+versions are displayed, and run **Check now**. A network failure must leave
+playback available through the last verified or bundled tools.
+
 ## Release build
 
 Create optimized, installable desktop artifacts:
@@ -217,24 +265,39 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 Pop-Location
 
+npm run refresh:playback-tools
 npm run tauri -- build
 ```
 
-Install the generated installer on a clean Windows account before distribution. Confirm audio playback works with no `mpv` or `yt-dlp` installed in `PATH`; the installer includes its own portable Windows x64 tools.
+`refresh:playback-tools` is a Windows release-only command. It downloads only
+the allowlisted stable assets, verifies their GitHub SHA-256 digests, validates
+both executables, replaces the bundled resource staging directory, and updates
+the checksum manifest and third-party notice.
+
+Install the generated installer on a clean Windows account before distribution.
+Confirm audio playback works with no `mpv` or `yt-dlp` installed in `PATH`, both
+versions appear in Options, a first-run update check completes, and playback
+still works when the machine is offline.
 
 ### Bundled playback tool maintenance
 
 The release installer packages `src-tauri/resources/playback-tools/` as Tauri resources. It contains the complete portable mpv runtime, `yt-dlp.exe`, source/license notices, and a checksum manifest.
 
-To update the bundled tools for a future release:
+Refresh the bundled tools from the repository root:
 
-1. Download one pinned Windows x64 mpv portable archive and the matching official `yt-dlp.exe` release.
-2. Verify the downloaded SHA-256 values before replacing the corresponding files under `src-tauri/resources/playback-tools/windows-x64/`.
-3. Update `src-tauri/resources/playback-tools/manifest.json` and `THIRD_PARTY_NOTICES.md` with the exact version, URL, and checksums.
-4. Preserve all mpv files adjacent to `mpv.exe`; mpv needs its portable runtime files at launch.
-5. Run the complete pre-release validation, build both installer formats, and test them on a Windows machine without external mpv or yt-dlp installations.
+```powershell
+npm run refresh:playback-tools
+```
 
-Do not use `yt-dlp -U` from the installed app. Ship yt-dlp updates with a verified Taurus release so the bundled manifest stays accurate.
+The command accepts exactly `yt-dlp.exe` from the latest stable yt-dlp release
+and a standard `mpv-x86_64-*.7z` zhongfly build. ARM64, x86_64-v3, debug, dev,
+and LGPL variants are rejected. It preserves the complete portable mpv runtime,
+updates `manifest.json` and `THIRD_PARTY_NOTICES.md`, and fails without replacing
+the active bundle if verification or validation does not complete.
+
+Do not manually run `yt-dlp -U` against installed or bundled resources. Runtime
+updates are managed by Taurus, and release assets should be refreshed with the
+command above so checksums and notices remain reproducible.
 
 ## Command reference
 
@@ -248,6 +311,7 @@ Do not use `yt-dlp -U` from the installed app. Ship yt-dlp updates with a verifi
 | Preview frontend bundle | `npm run preview` |
 | Run desktop app in development | `npm run tauri -- dev` |
 | Create desktop release bundle | `npm run tauri -- build` |
+| Refresh verified bundled playback tools | `npm run refresh:playback-tools` |
 | Rust check | `Push-Location src-tauri; cargo check; Pop-Location` |
 | Rust tests | `Push-Location src-tauri; cargo test; Pop-Location` |
 | Rust formatting check | `Push-Location src-tauri; cargo fmt --check; Pop-Location` |
@@ -268,6 +332,10 @@ src/                         React/TypeScript application
 src-tauri/                   Rust/Tauri backend
   src/lib.rs                 Tray, shortcuts, mpv IPC, window behavior
   src/playback/              mpv + yt-dlp process orchestration
+  src/tool_updater.rs        Verified background updater, manifests, rollback
+  src/bin/refresh_playback_tools.rs
+                             Release-only bundled-tool refresh command
+  resources/playback-tools/ Portable offline tools, licenses, checksum manifest
   capabilities/              Tauri permissions
   tauri.conf.json            Desktop/build configuration
 
@@ -279,13 +347,34 @@ ARCHITECTURE_AUDIT.md        Architecture audit
 
 ### Tauri starts but audio does not play
 
+Open **Options → Settings → Playback Tools** first. Confirm that mpv and yt-dlp
+show either `managed` or `bundled` as their source, then use **Check now**.
+
+Run Tauri from a terminal to see captured `mpv` diagnostics:
+
 ```powershell
-mpv --version
-yt-dlp --version
 npm run tauri -- dev
 ```
 
-Run Tauri from a terminal to see Rust logs and verify that both external tools are discoverable.
+Failures now include useful details for YouTube extraction, unavailable media,
+audio devices, codecs, missing runtime files, and unexpected process exits. If
+both managed and bundled tools are unavailable, verify optional PATH fallbacks:
+
+```powershell
+mpv --version
+yt-dlp --version
+```
+
+Deleting a damaged managed version is normally unnecessary: the startup check
+verifies its executable hash and automatically rolls back or uses the bundled
+fallback.
+
+### Playback-tool update fails
+
+Taurus continues with the active verified or bundled tools when GitHub is
+offline, rate-limited, returns malformed metadata, or a download fails checksum,
+size, extraction, or executable validation. Check the Options status and Rust
+logs, then retry with **Check now**. Never replace files in Program Files by hand.
 
 ### Browser mode has no tray/window controls
 

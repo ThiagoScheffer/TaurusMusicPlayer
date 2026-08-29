@@ -50,6 +50,8 @@ export function usePlayer(config: UsePlayerConfig) {
   const [duration, setDuration] = useState(0);
   const [current, setCurrent] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [externalAudioLoading, setExternalAudioLoading] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
 
   const playerRef = useRef<YouTubePlayer | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -81,7 +83,14 @@ export function usePlayer(config: UsePlayerConfig) {
   const startExternalTrack = (track: Track) => {
     if (!usesExternalAudio) return false;
     activeTrackIdRef.current = track.id;
-    invokeExternalAudio("play_external_audio", { url: trackPlaybackUrl(track), trackId: track.id })
+    setPlaybackError(null);
+    setExternalAudioLoading(true);
+    invokeExternalAudio("play_external_audio", {
+      url: trackPlaybackUrl(track),
+      trackId: track.id,
+      volume: Math.round(volume),
+      muted,
+    })
       .then(() => {
         externalAudioStartedRef.current = true;
         setCurrent(0);
@@ -89,6 +98,8 @@ export function usePlayer(config: UsePlayerConfig) {
       })
       .catch((error) => {
         externalAudioStartedRef.current = false;
+        setExternalAudioLoading(false);
+        setPlaybackError(String(error));
         setIsPlaying(false);
         window.alert(String(error));
       });
@@ -288,6 +299,8 @@ export function usePlayer(config: UsePlayerConfig) {
     if (usesExternalAudio) {
       invokeExternalAudio("stop_external_audio").catch(() => {});
       externalAudioStartedRef.current = false;
+      setExternalAudioLoading(false);
+      setPlaybackError(null);
       shouldAutoPlayRef.current = false;
       setIsPlaying(false);
       setCurrent(0);
@@ -504,6 +517,7 @@ export function usePlayer(config: UsePlayerConfig) {
         setCurrent(payload.current);
       }
       setIsPlaying(payload.isPlaying);
+      setExternalAudioLoading(payload.loading);
       externalAudioStartedRef.current = !payload.ended && !payload.error;
 
       if (payload.ended) {
@@ -514,7 +528,10 @@ export function usePlayer(config: UsePlayerConfig) {
       }
 
       if (payload.error) {
+        setPlaybackError(payload.error);
         console.error(payload.error);
+      } else if (payload.isPlaying) {
+        setPlaybackError(null);
       }
     });
 
@@ -699,6 +716,8 @@ export function usePlayer(config: UsePlayerConfig) {
     currentTrack,
     videoId,
     isPlaying,
+    externalAudioLoading,
+    playbackError,
     volume,
     setVolume,
     muted,

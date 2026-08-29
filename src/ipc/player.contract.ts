@@ -1,6 +1,6 @@
 import { emitTo, listen } from "@tauri-apps/api/event";
 import type { Event, UnlistenFn } from "@tauri-apps/api/event";
-import { EXTERNAL_AUDIO_EVENTS, GLOBAL_SHORTCUT_EVENTS, RUNTIME_EVENTS, TRAY_EVENTS } from "./events";
+import { EXTERNAL_AUDIO_EVENTS, GLOBAL_SHORTCUT_EVENTS, PLAYBACK_TOOL_EVENTS, RUNTIME_EVENTS, TRAY_EVENTS } from "./events";
 import type { BlacklistEntry, FocusMode } from "../types/player";
 import type { RuntimeSnapshot } from "../runtime/RuntimeSnapshot";
 
@@ -20,6 +20,7 @@ export interface AppEventPayloads {
   [RUNTIME_EVENTS.settingsExport]: { json: string };
   [RUNTIME_EVENTS.settingsImportResult]: { ok: boolean; error?: string };
   [EXTERNAL_AUDIO_EVENTS.state]: ExternalAudioStatePayload;
+  [PLAYBACK_TOOL_EVENTS.status]: PlaybackToolsStatus;
 }
 
 export type AppEventName = keyof AppEventPayloads;
@@ -33,7 +34,26 @@ export interface ExternalAudioStatePayload {
   loading: boolean;
   seekable: boolean;
   ended: boolean;
-  error?: string;
+  idleActive: boolean;
+  coreIdle: boolean;
+  mediaTitle: string | null;
+  audioDevice: string | null;
+  error: string | null;
+}
+
+export interface PlaybackToolStatus {
+  kind: "mpv" | "yt-dlp";
+  installedVersion: string | null;
+  latestVersion: string | null;
+  source: "managed" | "bundled" | "path";
+  failureMessage: string | null;
+}
+
+export interface PlaybackToolsStatus {
+  phase: "idle" | "checking" | "downloading" | "validating" | "updated" | "current" | "offline" | "failed";
+  lastCheck: number | null;
+  message: string | null;
+  tools: PlaybackToolStatus[];
 }
 
 export type RuntimeCommand =

@@ -25,9 +25,14 @@ export const EXTERNAL_AUDIO_EVENTS = {
   state: "external-audio://state",
 } as const;
 
+export const PLAYBACK_TOOL_EVENTS = {
+  status: "playback-tools://status",
+} as const;
+
 export const APP_EVENTS = {
   ...GLOBAL_SHORTCUT_EVENTS,
   ...TRAY_EVENTS,
   ...RUNTIME_EVENTS,
   ...EXTERNAL_AUDIO_EVENTS,
+  ...PLAYBACK_TOOL_EVENTS,
 } as const;

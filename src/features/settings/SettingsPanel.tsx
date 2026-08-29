@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { BlacklistEntryType } from "../../types/player";
 import type { AppSettings } from "./useAppSettings";
+import type { PlaybackToolsStatus } from "../../ipc/player.contract";
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -21,6 +22,8 @@ interface SettingsPanelProps {
   resetAllData: () => boolean;
   importError: string | null;
   backupStatus: string | null;
+  playbackTools: PlaybackToolsStatus | null;
+  checkPlaybackTools: () => void;
 }
 
 export function SettingsPanel(props: SettingsPanelProps) {
@@ -38,6 +41,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
     resetAllData,
     importError,
     backupStatus,
+    playbackTools,
+    checkPlaybackTools,
   } = props;
 
   const [blacklistType, setBlacklistType] = useState<BlacklistEntryType>("video");
@@ -100,6 +105,32 @@ export function SettingsPanel(props: SettingsPanelProps) {
             </button>
           </div>
         ))}
+      </div>
+
+      <div className="settings-section">
+        <h4>Playback Tools</h4>
+        {playbackTools?.tools.map((tool) => (
+          <div key={tool.kind} className="queue-item">
+            <div className="queue-meta">
+              <div className="queue-title">{tool.kind === "yt-dlp" ? "yt-dlp" : "mpv"}</div>
+              <div className="queue-sub">
+                {tool.installedVersion ?? "Bundled fallback"} · {tool.source}
+                {tool.latestVersion && ` · latest ${tool.latestVersion}`}
+              </div>
+              {tool.failureMessage && <div className="settings-error">{tool.failureMessage}</div>}
+            </div>
+          </div>
+        ))}
+        <div className="queue-sub">
+          {playbackTools?.message ?? `Status: ${playbackTools?.phase ?? "unavailable"}`}
+        </div>
+        <button
+          className="btn small"
+          onClick={checkPlaybackTools}
+          disabled={playbackTools?.phase === "checking" || playbackTools?.phase === "downloading" || playbackTools?.phase === "validating"}
+        >
+          Check now
+        </button>
       </div>
 
       <div className="settings-section">

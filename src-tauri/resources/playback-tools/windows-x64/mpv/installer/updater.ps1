@@ -73,6 +73,62 @@ function Download-Archive ($filename, $link) {
     Invoke-WebRequest -Uri $link -UserAgent $useragent -OutFile $filename
 }
 
+function Get-GitHubToken {
+    $file = "settings.xml"
+
+    if (Test-Path $file) {
+        $filePath = (Resolve-Path $file).Path
+        [xml]$doc = Get-Content $filePath
+        $settings = $doc.SelectSingleNode("/settings")
+        if ($settings) {
+            $githubtoken = $settings.SelectSingleNode("githubtoken")
+        }
+        if ($settings -and ($null -eq $githubtoken)) {
+            $newNode = $doc.CreateElement("githubtoken")
+            $newNode.AppendChild($doc.CreateTextNode("unset")) | out-null
+            $settings.AppendChild($newNode) | out-null
+            $doc.Save($filePath)
+            $githubtoken = $newNode
+        }
+        if ($settings -and ($null -ne $githubtoken)) {
+            $token = ([string]$githubtoken.InnerText).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($token) -and (-not [string]::Equals($token, "unset", [System.StringComparison]::OrdinalIgnoreCase))) {
+                return $token
+            }
+        }
+    }
+
+    $token = ([string]$env:GH_TOKEN).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        return $token
+    }
+
+    $token = ([string]$env:GITHUB_TOKEN).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        return $token
+    }
+
+    return $null
+}
+
+function Invoke-GitHubApi($Uri) {
+    $params = @{
+        Uri = $Uri
+        MaximumRedirection = 0
+        ErrorAction = "Ignore"
+        UseBasicParsing = $true
+        UserAgent = $useragent
+    }
+    $token = Get-GitHubToken
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        $params.Headers = @{
+            Authorization = "Bearer $token"
+        }
+    }
+
+    Invoke-WebRequest @params
+}
+
 function Download-Ytplugin ($plugin, $version) {
     $link = ""
     $plugin_exe = ""
@@ -83,7 +139,17 @@ function Download-Ytplugin ($plugin, $version) {
             if (-Not (Test-Path (Join-Path $env:windir "SysWow64"))) {
                 $32bit = "_x86"
             }
-            $link = -join("https://github.com/yt-dlp/yt-dlp/releases/download/", $version, "/", $plugin, $32bit, ".exe")
+            $ytdlp_channel = Check-Ytdlp-Channel
+            if ($ytdlp_channel -eq 'stable') {
+                $repo = "https://github.com/yt-dlp/yt-dlp"
+            }
+            elseif ($ytdlp_channel -eq 'nightly') {
+                $repo = "https://github.com/yt-dlp/yt-dlp-nightly-builds"
+            }
+            elseif ($ytdlp_channel -eq 'master') {
+                $repo = "https://github.com/yt-dlp/yt-dlp-master-builds"
+            }
+            $link = -join($repo, "/releases/download/", $version, "/", $plugin, $32bit, ".exe")
             $plugin_exe = -join($plugin, $32bit, ".exe")
         }
         "youtube-dl" {
@@ -101,35 +167,13 @@ function Extract-Archive ($file) {
     & $7z x -y $file
 }
 
-function Get-Latest-Mpv($Arch, $channel) {
+function Get-Latest-Mpv($Arch) {
     $filename = ""
     $download_link = ""
-    switch -wildcard ($channel) {
-        "daily" {
-            $api_gh = "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
-            $json = Invoke-WebRequest $api_gh -MaximumRedirection 0 -ErrorAction Ignore -UseBasicParsing | ConvertFrom-Json
-            $filename = $json.assets | where { $_.name -Match "mpv-$Arch" } | Select-Object -ExpandProperty name
-            $download_link = $json.assets | where { $_.name -Match "mpv-$Arch" } | Select-Object -ExpandProperty browser_download_url
-        }
-        "weekly" {
-            $i686_link = "https://sourceforge.net/projects/mpv-player-windows/rss?path=/32bit"
-            $x86_64_link = "https://sourceforge.net/projects/mpv-player-windows/rss?path=/64bit"
-            $x86_64v3_link = "https://sourceforge.net/projects/mpv-player-windows/rss?path=/64bit-v3"
-            $rss_link = ''
-            switch ($Arch)
-            {
-                i686 { $rss_link = $i686_link}
-                x86_64 { $rss_link = $x86_64_link }
-                x86_64-v3 { $rss_link = $x86_64v3_link }
-            }
-            Write-Host "Fetching RSS feed for mpv" -ForegroundColor Green
-            $result = [xml](New-Object System.Net.WebClient).DownloadString($rss_link)
-            $latest = $result.rss.channel.item.link[0]
-            $tempname = $latest.split("/")[-2]
-            $filename = [System.Uri]::UnescapeDataString($tempname)
-            $download_link = "https://download.sourceforge.net/mpv-player-windows/" + $filename
-        }
-    }
+    $api_gh = "https://api.github.com/repos/zhongfly/mpv-winbuild/releases/latest"
+    $json = Invoke-GitHubApi $api_gh | ConvertFrom-Json
+    $filename = $json.assets | where { $_.name -Match "mpv-$Arch-[0-9]{8}" } | Select-Object -ExpandProperty name
+    $download_link = $json.assets | where { $_.name -Match "mpv-$Arch-[0-9]{8}" } | Select-Object -ExpandProperty browser_download_url
     if ($filename -is [array]) {
         return $filename[0], $download_link[0]
     }
@@ -141,8 +185,18 @@ function Get-Latest-Mpv($Arch, $channel) {
 function Get-Latest-Ytplugin ($plugin) {
     switch -wildcard ($plugin) {
         "yt-dlp*" {
-            $link = "https://github.com/yt-dlp/yt-dlp/releases.atom"
-            Write-Host "Fetching RSS feed for ytp-dlp" -ForegroundColor Green
+            $ytdlp_channel = Check-Ytdlp-Channel
+            if ($ytdlp_channel -eq 'stable') {
+                $repo = "https://github.com/yt-dlp/yt-dlp"
+            }
+            elseif ($ytdlp_channel -eq 'nightly') {
+                $repo = "https://github.com/yt-dlp/yt-dlp-nightly-builds"
+            }
+            elseif ($ytdlp_channel -eq 'master') {
+                $repo = "https://github.com/yt-dlp/yt-dlp-master-builds"
+            }
+            $link = -join($repo, "/releases.atom")
+            Write-Host "Fetching RSS feed for yt-dlp $ytdlp_channel" -ForegroundColor Green
             $resp = [xml](Invoke-WebRequest $link -MaximumRedirection 0 -ErrorAction Ignore -UseBasicParsing).Content
             $link = $resp.feed.entry[0].link.href
             $version = $link.split("/")[-1]
@@ -160,10 +214,10 @@ function Get-Latest-Ytplugin ($plugin) {
 }
 
 function Get-Latest-FFmpeg ($Arch) {
-    $api_gh = "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
-    $json = Invoke-WebRequest $api_gh -MaximumRedirection 0 -ErrorAction Ignore -UseBasicParsing | ConvertFrom-Json
-    $filename = $json.assets | where { $_.name -Match "ffmpeg-$Arch" } | Select-Object -ExpandProperty name
-    $download_link = $json.assets | where { $_.name -Match "ffmpeg-$Arch" } | Select-Object -ExpandProperty browser_download_url
+    $api_gh = "https://api.github.com/repos/zhongfly/mpv-winbuild/releases/latest"
+    $json = Invoke-GitHubApi $api_gh | ConvertFrom-Json
+    $filename = $json.assets | where { $_.name -Match "ffmpeg-$Arch-git-" } | Select-Object -ExpandProperty name
+    $download_link = $json.assets | where { $_.name -Match "ffmpeg-$Arch-git-" } | Select-Object -ExpandProperty browser_download_url
     if ($filename -is [array]) {
         return $filename[0], $download_link[0]
     }
@@ -201,17 +255,52 @@ function Get-Arch {
     $result
 }
 
+function Get-RegexGroupValue($Text, [string[]]$Patterns, $GroupName) {
+    if ([string]::IsNullOrEmpty([string]$Text)) {
+        return $null
+    }
+
+    foreach ($pattern in $Patterns) {
+        $match = [regex]::Match([string]$Text, $pattern)
+        if ($match.Success) {
+            $group = $match.Groups[$GroupName]
+            if ($group -and -not [string]::IsNullOrEmpty($group.Value)) {
+                return $group.Value
+            }
+        }
+    }
+
+    return $null
+}
+
+function Test-CommitEquivalent($Left, $Right) {
+    if ([string]::IsNullOrEmpty($Left) -or [string]::IsNullOrEmpty($Right)) {
+        return $false
+    }
+
+    $shorter = [string]$Left
+    $longer = [string]$Right
+    if ($shorter.Length -gt $longer.Length) {
+        $shorter = [string]$Right
+        $longer = [string]$Left
+    }
+
+    return $longer.StartsWith($shorter, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function ExtractGitFromFile {
     $stripped = .\mpv --no-config | select-string "mpv" | select-object -First 1
-    $pattern = "-g([a-z0-9-]{7})"
-    $bool = $stripped -match $pattern
-    return $matches[1]
+    $patterns = @(
+        "-g(?<commit>[0-9A-Fa-f]{7,40})(?=[^0-9A-Fa-f]|$)"
+    )
+    return Get-RegexGroupValue $stripped $patterns "commit"
 }
 
 function ExtractGitFromURL($filename) {
-    $pattern = "-git-([a-z0-9-]{7})"
-    $bool = $filename -match $pattern
-    return $matches[1]
+    $patterns = @(
+        "-git-(?<commit>[0-9A-Fa-f]{7,40})(?=[^0-9A-Fa-f]|$)"
+    )
+    return Get-RegexGroupValue $filename $patterns "commit"
 }
 
 function ExtractDateFromFile {
@@ -223,9 +312,71 @@ function ExtractDateFromFile {
 }
 
 function ExtractDateFromURL($filename) {
-    $pattern = "mpv-[xi864_].*-([0-9]{8})-git-([a-z0-9-]{7})"
-    $bool = $filename -match $pattern
-    return $matches[1]
+    $patterns = @(
+        "-(?<date>[0-9]{8})-git-[0-9A-Fa-f]{7,40}(?=[^0-9A-Fa-f]|$)"
+    )
+    return Get-RegexGroupValue $filename $patterns "date"
+}
+
+function Ensure-Deno([string]$Context = "update") {
+    $deno_exe = Join-Path (Get-Location) "deno.exe"
+    if (Test-Path $deno_exe) {
+        # Only fetch remote tag when Deno exists and we need to compare
+        $remote_name = (Invoke-WebRequest "https://dl.deno.land/release-latest.txt" -UseBasicParsing -UserAgent $useragent).Content.Trim()
+        try {
+            $current_version = (& $deno_exe --version | Select-String "deno" | Select-Object -First 1).ToString()
+            $pattern = "deno\s+(?<ver>[0-9a-zA-Z\.-]+)"
+            $m = [Regex]::Match($current_version, $pattern)
+            if ($m.Success) {
+                $current_tag = $m.Groups['ver'].Value
+                $latest_norm = $remote_name.TrimStart('v')
+                if ($current_tag -eq $latest_norm) {
+                    Write-Host "You are already using latest Deno -- $remote_name" -ForegroundColor Green
+                    return
+                }
+                else {
+                    Write-Host "Newer Deno build available" -ForegroundColor Green
+                }
+            }
+        }
+        catch {
+            Write-Host "Error checking current Deno version: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+        $upgradePrompt = "Upgrade local Deno to latest stable now? [Y/n] (default=y)"
+        $upgradeResp = Read-KeyOrTimeout $upgradePrompt "Y"
+        Write-Host ""
+        if ($upgradeResp -eq 'Y') {
+            & $deno_exe upgrade
+        }
+        return
+    }
+
+    # No local deno: only offer install during initial yt-dlp install flow
+    if ($Context -ne 'install') {
+        return
+    }
+    # Deno provides only x86_64 builds for Windows. Skip on 32-bit systems.
+    if (-Not (Test-Path (Join-Path $env:windir "SysWow64"))) {
+        Write-Host "Deno isn't available for 32-bit Windows (x86). Skipping." -ForegroundColor Yellow
+        return
+    }
+    # Fetch remote tag only if we are going to download
+    Write-Host "Deno is optional, but recommended for yt-dlp." -ForegroundColor Yellow
+    Write-Host "yt-dlp uses external JS runtimes (EJS) to solve YouTube challenges; Deno is the default recommended runtime." -ForegroundColor Yellow
+    Write-Host "You may skip this and configure Node, Bun, or QuickJS later (see: https://github.com/yt-dlp/yt-dlp/wiki/EJS)." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Deno doesn't exist. " -ForegroundColor Green -NoNewline
+    $resp = Read-KeyOrTimeout "Proceed with downloading Deno now? [Y/n] (default=y)" "Y"
+    Write-Host ""
+    if ($resp -ne 'Y') { return }
+    $remote_name = (Invoke-WebRequest "https://dl.deno.land/release-latest.txt" -UseBasicParsing -UserAgent $useragent).Content.Trim()
+    $download_link = "https://dl.deno.land/release/$remote_name/deno-x86_64-pc-windows-msvc.zip"
+    $archive = "deno-x86_64-pc-windows-msvc.zip"
+    Write-Host "Downloading Deno (stable) $remote_name" -ForegroundColor Green
+    Download-Archive $archive $download_link
+    Check-7z
+    Extract-Archive $archive
+    Check-Autodelete $archive
 }
 
 function Test-Admin
@@ -234,50 +385,24 @@ function Test-Admin
     (New-Object Security.Principal.WindowsPrincipal $user).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
 }
 
-function Create-XML {
+function  Create-XML{
 @"
 <settings>
-  <channel>unset</channel>
   <arch>unset</arch>
   <autodelete>unset</autodelete>
   <getffmpeg>unset</getffmpeg>
+  <getytdl>unset</getytdl>
+  <ytdlpchannel>unset</ytdlpchannel>
+  <githubtoken>unset</githubtoken>
 </settings>
 "@ | Set-Content "settings.xml" -Encoding UTF8
-}
-
-function Check-ChannelRelease {
-    $channel = ""
-    $file = "settings.xml"
-
-    if (-not (Test-Path $file)) {
-        $result = Read-KeyOrTimeout "Choose mpv updates frequency, weekly or daily? [1=weekly/2=daily] (default=1)" "D1"
-        Write-Host ""
-        if ($result -eq 'D1') {
-            $channel = "weekly"
-        }
-        elseif ($result -eq 'D2') {
-            $channel = "daily"
-        }
-        else {
-            throw "Please enter valid input key."
-        }
-        Create-XML
-        [xml]$doc = Get-Content $file
-        $doc.settings.channel = $channel
-        $doc.Save($file)
-    }
-    else {
-        [xml]$doc = Get-Content $file
-        $channel = $doc.settings.channel
-    }
-    return $channel
 }
 
 function Check-Arch($arch) {
     $get_arch = ""
     $file = "settings.xml"
 
-    if (-not (Test-Path $file)) { exit }
+    if (-not (Test-Path $file)) { Create-XML }
     [xml]$doc = Get-Content $file
     if ($doc.settings.arch -eq "unset") {
         if ($arch -eq "i686") {
@@ -362,26 +487,109 @@ function Check-GetFFmpeg() {
     return $get_ffmpeg
 }
 
+function Check-GetYTDL() {
+    $get_ytdl = ""
+    $file = "settings.xml"
+
+    if (-not (Test-Path $file)) { exit }
+    [xml]$doc = Get-Content $file
+    if ($null -eq $doc.settings.getytdl) {
+		$yt = Check-Ytplugin
+		if ($yt -eq $null){
+			$get_ytdl = "unset"
+		}
+		elseif ((Get-Item $yt).BaseName -Match "yt-dlp*") {
+			$get_ytdl = "ytdlp"
+		}
+		else {
+			$get_ytdl = "youtubedl"
+		}
+		$newNode = $doc.CreateElement("getytdl")
+		$newNode.AppendChild($doc.CreateTextNode($get_ytdl)) | out-null
+		$doc.settings.appendchild($newNode) | out-null
+		$doc.Save($file)
+    }
+    else {
+		$get_ytdl = $doc.settings.getytdl
+    }
+    
+    if ($get_ytdl -eq "unset") {
+        $result = Read-KeyOrTimeout "Download ytdlp or youtubedl? [1=ytdlp/2=youtubedl/N] (default=1)" "D1"
+        Write-Host ""
+        if ($result -eq 'D1') {
+            $get_ytdl = "ytdlp"
+        }
+        elseif ($result -eq 'D2') {
+            $get_ytdl = "youtubedl"
+        }
+        elseif ($result -eq 'N') {
+            $get_ytdl = "false"
+        }
+        else {
+            throw "Please enter valid input key."
+        }
+        $doc.settings.getytdl = $get_ytdl
+        $doc.Save($file)
+    }
+
+    return $get_ytdl
+}
+
+function Check-Ytdlp-Channel() {
+    $ytdlp_channel = ""
+    $file = "settings.xml"
+
+    if (-not (Test-Path $file)) { exit }
+    [xml]$doc = Get-Content $file
+    if ($null -eq $doc.settings.ytdlpchannel) {
+        $newNode = $doc.CreateElement("ytdlpchannel")
+        $newNode.AppendChild($doc.CreateTextNode("unset")) | out-null
+        $doc.settings.appendchild($newNode) | out-null
+    }
+    if ($doc.settings.ytdlpchannel -eq "unset") {
+        $result = Read-KeyOrTimeout "Which update channel to update yt-dlp to? [1=stable/2=nightly/3=master] (default=1)" "D1"
+        Write-Host ""
+        if ($result -eq 'D1') {
+            $ytdlp_channel = "stable"
+        }
+        elseif ($result -eq 'D2') {
+            $ytdlp_channel = "nightly"
+        }
+        elseif ($result -eq 'D3') {
+            $ytdlp_channel = "master"
+        }
+        else {
+            throw "Please enter valid input key."
+        }
+        $doc.settings.ytdlpchannel = $ytdlp_channel
+        $doc.Save($file)
+    }
+    else {
+        $ytdlp_channel = $doc.settings.ytdlpchannel
+    }
+    return $ytdlp_channel
+}
+
 function Upgrade-Mpv {
     $need_download = $false
     $remoteName = ""
     $download_link = ""
     $arch = ""
-    $channel = ""
 
     if (Check-Mpv) {
-        $channel = Check-ChannelRelease
         $file_arch = (Get-Arch).FileType
         $arch = Check-Arch $file_arch
-        $remoteName, $download_link = Get-Latest-Mpv $arch $channel
+        $remoteName, $download_link = Get-Latest-Mpv $arch
         $localgit = ExtractGitFromFile
         $localdate = ExtractDateFromFile
         $remotegit = ExtractGitFromURL $remoteName
         $remotedate = ExtractDateFromURL $remoteName
-        if ($localgit -match $remotegit)
-        {
-            if ($localdate -match $remotedate)
-            {
+        if ([string]::IsNullOrEmpty($localgit) -or [string]::IsNullOrEmpty($remotegit) -or [string]::IsNullOrEmpty($localdate) -or [string]::IsNullOrEmpty($remotedate)) {
+            Write-Host "Unable to compare local and remote mpv build metadata. Downloading latest build." -ForegroundColor Yellow
+            $need_download = $true
+        }
+        elseif (Test-CommitEquivalent $localgit $remotegit) {
+            if ($localdate -eq $remotedate) {
                 Write-Host "You are already using latest mpv build -- $remoteName" -ForegroundColor Green
                 $need_download = $false
             }
@@ -410,9 +618,8 @@ function Upgrade-Mpv {
                 Write-Host "Detecting System Type is 32-bit" -ForegroundColor Green
                 $original_arch = "i686"
             }
-            $channel = Check-ChannelRelease
             $arch = Check-Arch $original_arch
-            $remoteName, $download_link = Get-Latest-Mpv $arch $channel
+            $remoteName, $download_link = Get-Latest-Mpv $arch
         }
         elseif ($result -eq 'N') {
             $need_download = $false
@@ -440,31 +647,38 @@ function Upgrade-Ytplugin {
         $latest_release = Get-Latest-Ytplugin((Get-Item $yt).BaseName)
         if ((& $yt --version) -match ($latest_release)) {
             Write-Host "You are already using latest" (Get-Item $yt).BaseName "-- $latest_release" -ForegroundColor Green
+            if ((Get-Item $yt).BaseName -Match "yt-dlp*") {
+                # Even if yt-dlp is up-to-date, ensure Deno runtime is updated
+                Ensure-Deno "update"
+            }
         }
         else {
             Write-Host "Newer" (Get-Item $yt).BaseName "build available" -ForegroundColor Green
-            & $yt --update
+            if ((Get-Item $yt).BaseName -Match "yt-dlp*") {
+                $ytdlp_channel = Check-Ytdlp-Channel
+                & $yt --update-to $ytdlp_channel
+                Ensure-Deno "update"
+            }
+            else {
+                & $yt --update
+            }
         }
     }
     else {
         Write-Host "ytdlp or youtube-dl doesn't exist. " -ForegroundColor Green -NoNewline
-        $result = Read-KeyOrTimeout "Proceed with downloading? [Y/n] (default=n)" "N"
-        Write-Host ""
-
-        if ($result -eq 'Y') {
-            $result_exe = Read-KeyOrTimeout "Download ytdlp or youtubedl? [1=ytdlp/2=youtubedl] (default=1)" "D1"
-            Write-Host ""
-            if ($result_exe -eq 'D1') {
-                $latest_release = Get-Latest-Ytplugin "yt-dlp"
-                Download-Ytplugin "yt-dlp" $latest_release
-            }
-            elseif ($result_exe -eq 'D2') {
-                $latest_release = Get-Latest-Ytplugin "youtube-dl"
-                Download-Ytplugin "youtube-dl" $latest_release
-            }
-            else {
-                throw "Please enter valid input key."
-            }
+        # Use persisted setting to decide which plugin to install
+        $ytdl = Check-GetYTDL
+        if ($ytdl -eq 'ytdlp') {
+            $latest_release = Get-Latest-Ytplugin "yt-dlp"
+            Download-Ytplugin "yt-dlp" $latest_release
+            Ensure-Deno "install"
+        }
+        elseif ($ytdl -eq 'youtubedl') {
+            $latest_release = Get-Latest-Ytplugin "youtube-dl"
+            Download-Ytplugin "youtube-dl" $latest_release
+        }
+        elseif ($ytdl -ne 'false') {
+            throw "Please enter valid input key."
         }
     }
 }
@@ -490,16 +704,21 @@ function Upgrade-FFmpeg {
 
     if ($ffmpeg_exist) {
         $ffmpeg_file = .\ffmpeg -version | select-string "ffmpeg" | select-object -First 1
-        $file_pattern_1 = "git-[0-9]{4}-[0-9]{2}-[0-9]{2}-(?<commit>[a-z0-9]+)" # git-2023-01-02-cc2b1a325
-        $file_pattern_2 = "N-\d+-g(?<commit>[a-z0-9]+)"                         # N-109751-g9a820ec8b
-        $file_pattern = $file_pattern_1, $file_pattern_2 -join '|'
-        $url_pattern = "git-([a-z0-9]+)"
-        $file_match= [Regex]::Matches($ffmpeg_file, $file_pattern)
-        $remote_match = [Regex]::Matches($remote_name, $url_pattern)
-        $local_git = $file_match[0].groups['commit'].value
-        $remote_git = $remote_match[0].groups[1].value
+        $file_patterns = @(
+            "git-[0-9]{4}-[0-9]{2}-[0-9]{2}-(?<commit>[0-9A-Fa-f]{7,40})(?=[^0-9A-Fa-f]|$)",
+            "N-\d+-g(?<commit>[0-9A-Fa-f]{7,40})(?=[^0-9A-Fa-f]|$)"
+        )
+        $url_patterns = @(
+            "-git-(?<commit>[0-9A-Fa-f]{7,40})(?=[^0-9A-Fa-f]|$)"
+        )
+        $local_git = Get-RegexGroupValue $ffmpeg_file $file_patterns "commit"
+        $remote_git = Get-RegexGroupValue $remote_name $url_patterns "commit"
 
-        if ($local_git -match $remote_git) {
+        if ([string]::IsNullOrEmpty($local_git) -or [string]::IsNullOrEmpty($remote_git)) {
+            Write-Host "Unable to compare local and remote ffmpeg build metadata. Downloading latest build." -ForegroundColor Yellow
+            $need_download = $true
+        }
+        elseif (Test-CommitEquivalent $local_git $remote_git) {
             Write-Host "You are already using latest ffmpeg build -- $remote_name" -ForegroundColor Green
             $need_download = $false
         }

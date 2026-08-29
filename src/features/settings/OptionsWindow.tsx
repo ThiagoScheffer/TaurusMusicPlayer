@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { RUNTIME_EVENTS } from "../../ipc/events";
-import { emitToMain, listenTypedEvent, type RuntimeCommand } from "../../ipc/player.contract";
+import { invoke } from "@tauri-apps/api/core";
+import { PLAYBACK_TOOL_EVENTS, RUNTIME_EVENTS } from "../../ipc/events";
+import { emitToMain, listenTypedEvent, type PlaybackToolsStatus, type RuntimeCommand } from "../../ipc/player.contract";
 import type { FocusMode, Session } from "../../types/player";
 import type { RuntimeSnapshot } from "../../runtime/RuntimeSnapshot";
 import { FocusModesPanel } from "../focus-modes/FocusModesPanel";
@@ -58,6 +59,7 @@ export function OptionsWindow() {
   const [tab, setTab] = useState<Tab>("queue");
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(EMPTY_SNAPSHOT);
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
+  const [playbackTools, setPlaybackTools] = useState<PlaybackToolsStatus | null>(null);
   const exportPendingRef = useRef(false);
 
   useEffect(() => {
@@ -76,13 +78,16 @@ export function OptionsWindow() {
     const unlistenImportPromise = listenTypedEvent(RUNTIME_EVENTS.settingsImportResult, (payload) => {
       setBackupStatus(payload.ok ? "Backup imported successfully. Playback is stopped." : `Backup import failed: ${payload.error ?? "Unknown error."}`);
     });
+    const unlistenToolsPromise = listenTypedEvent(PLAYBACK_TOOL_EVENTS.status, setPlaybackTools);
 
     emitToMain(RUNTIME_EVENTS.requestSnapshot).catch(() => {});
+    invoke<PlaybackToolsStatus>("get_playback_tools_status").then(setPlaybackTools).catch(() => {});
 
     return () => {
       unlistenSnapshotPromise.then((fn) => fn()).catch(() => {});
       unlistenExportPromise.then((fn) => fn()).catch(() => {});
       unlistenImportPromise.then((fn) => fn()).catch(() => {});
+      unlistenToolsPromise.then((fn) => fn()).catch(() => {});
     };
   }, []);
 
@@ -252,6 +257,13 @@ export function OptionsWindow() {
             }}
             importError={snapshot.settingsImportError}
             backupStatus={backupStatus}
+            playbackTools={playbackTools}
+            checkPlaybackTools={() => {
+              setPlaybackTools((current) => current ? { ...current, phase: "checking", message: "Checking GitHub for stable updates..." } : current);
+              void invoke("check_playback_tools_updates").catch((error) => {
+                setPlaybackTools((current) => current ? { ...current, phase: "failed", message: String(error) } : current);
+              });
+            }}
           />
         )}
 

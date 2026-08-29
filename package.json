@@ -9,7 +9,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "refresh:playback-tools": "set TAURUS_RELEASE_TOOL_REFRESH=1&& cd src-tauri && cargo run --release --bin refresh_playback_tools -- resources/playback-tools"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
